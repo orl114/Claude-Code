@@ -40,8 +40,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private DcMotorEx turret;
     private VoltageSensor batteryVoltageSensor;
 
-    // Tolerancia de RPM para disparo (RPM reales del motor)
-    private static final double RPM_TOLERANCE = 50.0;
+    // Tolerancia de RPM para disparo
+    private static final double RPM_TOLERANCE = 25.0;
 
     // Configuración Torreta
     private static final double MOTOR_TICKS_PER_REV = 537.7;
@@ -84,19 +84,14 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final long MAX_LL_STALENESS_MS = 100;
 
     // Configuración Flywheel (Recuperación rápida)
-    // Motor del shooter: goBILDA 5203 de 6000 rpm (1:1), encoder de 28 cuentas por vuelta.
-    // Antes se dividía entre 2.89 (reducción de un UltraPlanetary 3:1 de REV), lo que hacía que la
-    // telemetría mostrara ~2.89 veces menos RPM de las reales.
-    // Si el motor tuviera caja de reducción, poner aquí su relación (1620 rpm = 3.7, 1150 rpm = 5.2).
     private final double ENCODER_CPR = 28.0;
-    private final double SHOOTER_GEAR_RATIO = 1.0;
+    private final double ULTRA_RATIO = 2.89;
 
-    // Ganancias ajustadas a RPM reales (las anteriores divididas entre 2.89: mismo comportamiento)
     private double kS = 0.08;
-    private double kV = 0.000169;   // ~1 / 5900 RPM a 12 V
-    private double kP = 0.00173;
-    private double kI = 0.000346;
-    private double kD = 0.0000069;
+    private double kV = 0.000488;
+    private double kP = 0.0050;
+    private double kI = 0.0010;
+    private double kD = 0.00002;
 
     // Recuperación agresiva del flywheel (para ráfagas): si las RPM caen más de ENTER (fracción
     // del objetivo), da potencia máxima hasta volver a quedar a menos de EXIT; luego retoma PID + feedforward.
@@ -104,6 +99,16 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double RECOVERY_EXIT_FRACTION = 0.01;
     private static final double RECOVERY_POWER = 1.0;
     private boolean recovering = false;
+
+    // Protección del encoder del shooter: si se le da potencia y el encoder no marca giro
+    // (cable flojo/desconectado, conectado a otro puerto) o marca al revés, se apaga el shooter.
+    // Sin esto, el PID y la recuperación ven "0 RPM" y mandan potencia máxima con cualquier objetivo.
+    private static final double ENCODER_FAULT_POWER = 0.30;   // potencia a partir de la cual ya debería girar
+    private static final double ENCODER_FAULT_MIN_RPM = 30.0; // por debajo de esto = "no gira"
+    private static final double ENCODER_FAULT_SECONDS = 0.6;
+    private boolean encoderFault = false;
+    private double lastShooterPower = 0.0;
+    private ElapsedTime encoderFaultTimer = new ElapsedTime();
 
     // Boost de objetivo en ráfagas: al detectar la caída de RPM de la primera bola, sube el objetivo
     // BURST_BOOST_FRACTION durante la ráfaga, para que las bolas siguientes salgan desde RPM más altas.
@@ -118,9 +123,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private double lastTargetRPM = 0.0;
     private ElapsedTime burstTimer = new ElapsedTime();
 
-
-    private static final double INTEGRAL_ZONE_RPM = 430.0; // el integrador solo acumula cerca del objetivo
-    private static final double RPM_STEP = 50.0;           // paso del dpad izquierdo/derecho (gamepad 2)
 
     private double integralSum = 0.0;
     private double maxIntegralPowerContribution = 0.25;
@@ -305,23 +307,24 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             turret.setPower(desiredTurretPower);
 
             // =========================================================
-            // 2. GAMEPAD 2: CONTROL DE RPM (DE RPM_STEP EN RPM_STEP)
+            // 2. GAMEPAD 2: CONTROL DE RPM (DE 25 EN 25)
             // =========================================================
             boolean currentDpadRight = gamepad2.dpad_right;
             if (currentDpadRight && !lastDpadRight) {
-                targetRPM += RPM_STEP;
+                targetRPM += 25.0;
             }
             lastDpadRight = currentDpadRight;
 
             boolean currentDpadLeft = gamepad2.dpad_left;
             if (currentDpadLeft && !lastDpadLeft) {
-                targetRPM -= RPM_STEP;
+                targetRPM -= 25.0;
                 if (targetRPM < 0) targetRPM = 0.0;
             }
             lastDpadLeft = currentDpadLeft;
 
             if (gamepad2.x) {
                 targetRPM = 0.0;
+                encoderFault = false; // X también limpia el error de encoder
             }
 
             // =========================================================
@@ -360,19 +363,32 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             double derivative = dt > 0 ? -(currentRPM - lastRPM) / dt : 0.0;
             lastRPM = currentRPM;
 
-            if (targetRPM <= 0) {
+            // Detección de encoder que no lee: hay potencia pero no hay giro (o gira "al revés")
+            boolean encoderLooksDead = lastShooterPower >= ENCODER_FAULT_POWER
+                    && currentRPM < ENCODER_FAULT_MIN_RPM;
+            if (!encoderLooksDead) {
+                encoderFaultTimer.reset();
+            } else if (encoderFaultTimer.seconds() > ENCODER_FAULT_SECONDS) {
+                encoderFault = true;
+            }
+
+            if (targetRPM <= 0 || encoderFault) {
                 shooter.setPower(0.0);
+                lastShooterPower = 0.0;
                 integralSum = 0.0;
                 recovering = false;
             } else {
-                // Histéresis de la recuperación agresiva
-                if (!recovering && currentRPM < effTarget * (1.0 - RECOVERY_ENTER_FRACTION)) {
+                // Histéresis de la recuperación agresiva. Solo se usa en ráfagas, cuando el shooter
+                // ya llegó al objetivo (burstArmed): el arranque y los cambios de objetivo van con PID.
+                if (!burstArmed) {
+                    recovering = false;
+                } else if (!recovering && currentRPM < effTarget * (1.0 - RECOVERY_ENTER_FRACTION)) {
                     recovering = true;
                 } else if (recovering && currentRPM >= effTarget * (1.0 - RECOVERY_EXIT_FRACTION)) {
                     recovering = false;
                 }
 
-                if (!recovering && Math.abs(error) < INTEGRAL_ZONE_RPM) {
+                if (!recovering && Math.abs(error) < 150.0) {
                     integralSum += error * dt;
                     double maxIntegralSum = maxIntegralPowerContribution / kI;
                     integralSum = Math.min(maxIntegralSum, Math.max(-maxIntegralSum, integralSum));
@@ -388,7 +404,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 calculatedPower = Math.min(1.0, Math.max(0.0, calculatedPower));
 
                 // En recuperación: potencia máxima (el integrador queda congelado para evitar windup)
-                shooter.setPower(recovering ? RECOVERY_POWER : calculatedPower);
+                lastShooterPower = recovering ? RECOVERY_POWER : calculatedPower;
+                shooter.setPower(lastShooterPower);
             }
 
             // =========================================================
@@ -435,6 +452,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
                 telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
+                telemetry.addData("Shooter potencia / ticks/s", "%.2f / %.0f", lastShooterPower, shooter.getVelocity());
+                if (encoderFault) {
+                    telemetry.addLine("!! SHOOTER APAGADO: el encoder no marca giro. Revisa el cable del encoder"
+                            + " (mismo puerto que el motor). Presiona X para reintentar.");
+                }
                 telemetry.update();
                 telemetryTimer.reset();
             }
@@ -463,6 +485,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     private double getRPM() {
         double ticksPerSec = shooter.getVelocity();
-        return (ticksPerSec / ENCODER_CPR) * 60.0 / SHOOTER_GEAR_RATIO;
+        return (ticksPerSec / ENCODER_CPR) * 60.0 / ULTRA_RATIO;
     }
 }
