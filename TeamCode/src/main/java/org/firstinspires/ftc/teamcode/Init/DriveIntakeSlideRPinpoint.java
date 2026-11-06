@@ -40,8 +40,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private DcMotorEx turret;
     private VoltageSensor batteryVoltageSensor;
 
-    // Tolerancia de RPM para disparo
-    private static final double RPM_TOLERANCE = 25.0;
+    // Tolerancia de RPM para disparo (RPM reales del motor)
+    private static final double RPM_TOLERANCE = 50.0;
 
     // Configuración Torreta
     private static final double MOTOR_TICKS_PER_REV = 537.7;
@@ -84,14 +84,19 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final long MAX_LL_STALENESS_MS = 100;
 
     // Configuración Flywheel (Recuperación rápida)
+    // Motor del shooter: goBILDA 5203 de 6000 rpm (1:1), encoder de 28 cuentas por vuelta.
+    // Antes se dividía entre 2.89 (reducción de un UltraPlanetary 3:1 de REV), lo que hacía que la
+    // telemetría mostrara ~2.89 veces menos RPM de las reales.
+    // Si el motor tuviera caja de reducción, poner aquí su relación (1620 rpm = 3.7, 1150 rpm = 5.2).
     private final double ENCODER_CPR = 28.0;
-    private final double ULTRA_RATIO = 2.89;
+    private final double SHOOTER_GEAR_RATIO = 1.0;
 
+    // Ganancias ajustadas a RPM reales (las anteriores divididas entre 2.89: mismo comportamiento)
     private double kS = 0.08;
-    private double kV = 0.000488;
-    private double kP = 0.0050;
-    private double kI = 0.0010;
-    private double kD = 0.00002;
+    private double kV = 0.000169;   // ~1 / 5900 RPM a 12 V
+    private double kP = 0.00173;
+    private double kI = 0.000346;
+    private double kD = 0.0000069;
 
     // Recuperación agresiva del flywheel (para ráfagas): si las RPM caen más de ENTER (fracción
     // del objetivo), da potencia máxima hasta volver a quedar a menos de EXIT; luego retoma PID + feedforward.
@@ -113,6 +118,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private double lastTargetRPM = 0.0;
     private ElapsedTime burstTimer = new ElapsedTime();
 
+
+    private static final double INTEGRAL_ZONE_RPM = 430.0; // el integrador solo acumula cerca del objetivo
+    private static final double RPM_STEP = 50.0;           // paso del dpad izquierdo/derecho (gamepad 2)
 
     private double integralSum = 0.0;
     private double maxIntegralPowerContribution = 0.25;
@@ -297,17 +305,17 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             turret.setPower(desiredTurretPower);
 
             // =========================================================
-            // 2. GAMEPAD 2: CONTROL DE RPM (DE 25 EN 25)
+            // 2. GAMEPAD 2: CONTROL DE RPM (DE RPM_STEP EN RPM_STEP)
             // =========================================================
             boolean currentDpadRight = gamepad2.dpad_right;
             if (currentDpadRight && !lastDpadRight) {
-                targetRPM += 25.0;
+                targetRPM += RPM_STEP;
             }
             lastDpadRight = currentDpadRight;
 
             boolean currentDpadLeft = gamepad2.dpad_left;
             if (currentDpadLeft && !lastDpadLeft) {
-                targetRPM -= 25.0;
+                targetRPM -= RPM_STEP;
                 if (targetRPM < 0) targetRPM = 0.0;
             }
             lastDpadLeft = currentDpadLeft;
@@ -364,7 +372,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     recovering = false;
                 }
 
-                if (!recovering && Math.abs(error) < 150.0) {
+                if (!recovering && Math.abs(error) < INTEGRAL_ZONE_RPM) {
                     integralSum += error * dt;
                     double maxIntegralSum = maxIntegralPowerContribution / kI;
                     integralSum = Math.min(maxIntegralSum, Math.max(-maxIntegralSum, integralSum));
@@ -455,6 +463,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     private double getRPM() {
         double ticksPerSec = shooter.getVelocity();
-        return (ticksPerSec / ENCODER_CPR) * 60.0 / ULTRA_RATIO;
+        return (ticksPerSec / ENCODER_CPR) * 60.0 / SHOOTER_GEAR_RATIO;
     }
 }
