@@ -434,7 +434,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
                 telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
-                telemetry.addData("Shooter potencia / ticks/s", "%.2f / %.0f", lastShooterPower, shooter.getVelocity());
+                telemetry.addData("Shooter potencia / ticks/s / posición", "%.2f / %.0f / %d",
+                        lastShooterPower, shooter.getVelocity(), shooter.getCurrentPosition());
                 telemetry.update();
                 telemetryTimer.reset();
             }
@@ -462,7 +463,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     }
 
     private double getRPM() {
-        double ticksPerSec = shooter.getVelocity();
+        // Valor absoluto: si el encoder cuenta al revés que la potencia (cables del motor invertidos),
+        // la velocidad sale negativa y el PID creería que el shooter está parado y le daría todo.
+        double ticksPerSec = Math.abs(shooter.getVelocity());
         return (ticksPerSec / ENCODER_CPR) * 60.0 / ULTRA_RATIO;
     }
 }
