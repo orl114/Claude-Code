@@ -100,15 +100,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double RECOVERY_POWER = 1.0;
     private boolean recovering = false;
 
-    // Protección del encoder del shooter: si se le da potencia y el encoder no marca giro
-    // (cable flojo/desconectado, conectado a otro puerto) o marca al revés, se apaga el shooter.
-    // Sin esto, el PID y la recuperación ven "0 RPM" y mandan potencia máxima con cualquier objetivo.
-    private static final double ENCODER_FAULT_POWER = 0.30;   // potencia a partir de la cual ya debería girar
-    private static final double ENCODER_FAULT_MIN_RPM = 30.0; // por debajo de esto = "no gira"
-    private static final double ENCODER_FAULT_SECONDS = 0.6;
-    private boolean encoderFault = false;
-    private double lastShooterPower = 0.0;
-    private ElapsedTime encoderFaultTimer = new ElapsedTime();
+    private double lastShooterPower = 0.0; // potencia aplicada al shooter (para telemetría)
 
     // Boost de objetivo en ráfagas: al detectar la caída de RPM de la primera bola, sube el objetivo
     // BURST_BOOST_FRACTION durante la ráfaga, para que las bolas siguientes salgan desde RPM más altas.
@@ -324,7 +316,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
             if (gamepad2.x) {
                 targetRPM = 0.0;
-                encoderFault = false; // X también limpia el error de encoder
             }
 
             // =========================================================
@@ -363,16 +354,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             double derivative = dt > 0 ? -(currentRPM - lastRPM) / dt : 0.0;
             lastRPM = currentRPM;
 
-            // Detección de encoder que no lee: hay potencia pero no hay giro (o gira "al revés")
-            boolean encoderLooksDead = lastShooterPower >= ENCODER_FAULT_POWER
-                    && currentRPM < ENCODER_FAULT_MIN_RPM;
-            if (!encoderLooksDead) {
-                encoderFaultTimer.reset();
-            } else if (encoderFaultTimer.seconds() > ENCODER_FAULT_SECONDS) {
-                encoderFault = true;
-            }
-
-            if (targetRPM <= 0 || encoderFault) {
+            if (targetRPM <= 0) {
                 shooter.setPower(0.0);
                 lastShooterPower = 0.0;
                 integralSum = 0.0;
@@ -453,10 +435,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
                 telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
                 telemetry.addData("Shooter potencia / ticks/s", "%.2f / %.0f", lastShooterPower, shooter.getVelocity());
-                if (encoderFault) {
-                    telemetry.addLine("!! SHOOTER APAGADO: el encoder no marca giro. Revisa el cable del encoder"
-                            + " (mismo puerto que el motor). Presiona X para reintentar.");
-                }
                 telemetry.update();
                 telemetryTimer.reset();
             }
