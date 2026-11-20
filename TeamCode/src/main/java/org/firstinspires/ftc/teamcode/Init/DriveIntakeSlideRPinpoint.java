@@ -38,6 +38,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // SubSistemas
     private DcMotorEx shooter;
     private DcMotorEx turret;
+    private DcMotorEx mI1; // motor de ADELANTE del intake
+    private DcMotorEx mI2; // motor de ATRÁS del intake
     private VoltageSensor batteryVoltageSensor;
 
     // Tolerancia de RPM para disparo
@@ -162,6 +164,14 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         turret.setDirection(DcMotor.Direction.REVERSE);
         turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
         turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+
+        mI1 = hardwareMap.get(DcMotorEx.class, "mI1");
+        mI1.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        mI1.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+
+        mI2 = hardwareMap.get(DcMotorEx.class, "mI2");
+        mI2.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        mI2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
 
         RevHubOrientationOnRobot orientation = new RevHubOrientationOnRobot(
                 RevHubOrientationOnRobot.LogoFacingDirection.UP,
@@ -391,9 +401,10 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             }
 
             // =========================================================
-            // 4. GAMEPAD 1: CHASIS (más lento con right_bumper) E INTAKE (AL 80%)
+            // 4. GAMEPAD 1: CHASIS (más lento con "A") E INTAKE DE DOS MOTORES (AL 80%)
             // =========================================================
-            double driveScale = gamepad1.right_bumper ? SHOOT_SPEED_SCALE : 1.0;
+            // El bumper derecho se movió a "A" porque R1 ahora controla el motor de adelante del intake.
+            double driveScale = gamepad1.a ? SHOOT_SPEED_SCALE : 1.0;
 
             // Field-centric siempre activo. Con el bumper izquierdo (gamepad 1) y el robot mirando
             // al frente del campo, se recalibra el yaw del IMU.
@@ -408,12 +419,20 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             double robotRight = fieldFwd * Math.sin(hRad) + fieldRight * Math.cos(hRad);
             chassis.move2(-robotFwd, robotRight, gamepad1.right_stick_x * driveScale);
 
+            // Intake: gatillo izquierdo (agarrar) y gatillo derecho (sacar) mueven mI1 y mI2 juntos.
+            // R1 (right_bumper), sin gatillos presionados, mueve SOLO mI1 (motor de adelante) en "sacar".
             if (gamepad1.left_trigger > 0.2) {
-                robot.moveIntake(1.0 * INTAKE_POWER_SCALE);   // agarrar
+                mI1.setPower(1.0 * INTAKE_POWER_SCALE);
+                mI2.setPower(1.0 * INTAKE_POWER_SCALE);
             } else if (gamepad1.right_trigger > 0.2) {
-                robot.moveIntake(-1.0 * INTAKE_POWER_SCALE);  // sacar
+                mI1.setPower(-1.0 * INTAKE_POWER_SCALE);
+                mI2.setPower(-1.0 * INTAKE_POWER_SCALE);
+            } else if (gamepad1.right_bumper) {
+                mI1.setPower(-1.0 * INTAKE_POWER_SCALE);
+                mI2.setPower(0.0);
             } else {
-                robot.moveIntake(0);
+                mI1.setPower(0.0);
+                mI2.setPower(0.0);
             }
 
             // =========================================================
@@ -443,6 +462,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
         chassis.stopChassis();
         robot.moveIntake(0);
+        mI1.setPower(0.0);
+        mI2.setPower(0.0);
         shooter.setPower(0.0);
         turret.setPower(0.0);
         limelight.stop();
