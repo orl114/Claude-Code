@@ -104,16 +104,25 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private double lastShooterPower = 0.0; // potencia aplicada al shooter (para telemetría)
 
     // Boost de objetivo en ráfagas: al detectar la caída de RPM de la primera bola, sube el objetivo
-    // BURST_BOOST_FRACTION durante la ráfaga, para que las bolas siguientes salgan desde RPM más altas.
+    // burstBoostFraction durante la ráfaga, para que las bolas siguientes salgan desde RPM más altas.
     // Se arma solo cuando el shooter ya alcanzó su objetivo (así no se activa durante el arranque).
-    // Ajustar en cancha: si las bolas 2 y 3 se pasan de largo, bajar BURST_BOOST_FRACTION.
+    // Ajustable en vivo con gamepad 2 (ver sección de ajuste de PID/boost más abajo).
     private static final double BURST_ARM_FRACTION = 0.02;    // RPM a menos de esto del objetivo = listo
     private static final double SHOT_DETECT_FRACTION = 0.03;  // caída que se considera un disparo
-    private static final double BURST_BOOST_FRACTION = 0.05;  // aumento del objetivo durante la ráfaga (antes 0.08)
+    private double burstBoostFraction = 0.08;                 // aumento del objetivo durante la ráfaga
     private static final double BURST_HOLD_SECONDS = 0.8;     // sin nuevas caídas por este tiempo = fin de la ráfaga
     private boolean burstArmed = false;
     private boolean burstActive = false;
     private double lastTargetRPM = 0.0;
+
+    // --- Ajuste en vivo de kP/kI/kV/boost de ráfaga (gamepad 2) ---
+    // LB/RB eligen el parámetro; Y sube, A baja (x1.1 / ÷1.1 cada pulsación).
+    private static final String[] TUNABLE_NAMES = {"kP", "kI", "kV", "Boost ráfaga"};
+    private int tunableIndex = 0;
+    private boolean lastTuneLeft = false;
+    private boolean lastTuneRight = false;
+    private boolean lastTuneUp = false;
+    private boolean lastTuneDown = false;
     private ElapsedTime burstTimer = new ElapsedTime();
 
 
@@ -321,6 +330,40 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 targetRPM = 0.0;
             }
 
+            // Ajuste en vivo de kP/kI/kV/boost de ráfaga: LB/RB elige el parámetro,
+            // Y sube y A baja ese valor (x1.1 / ÷1.1 por cada pulsación).
+            boolean curTuneLeft = gamepad2.left_bumper;
+            if (curTuneLeft && !lastTuneLeft) {
+                tunableIndex = (tunableIndex + TUNABLE_NAMES.length - 1) % TUNABLE_NAMES.length;
+            }
+            lastTuneLeft = curTuneLeft;
+
+            boolean curTuneRight = gamepad2.right_bumper;
+            if (curTuneRight && !lastTuneRight) {
+                tunableIndex = (tunableIndex + 1) % TUNABLE_NAMES.length;
+            }
+            lastTuneRight = curTuneRight;
+
+            boolean curTuneUp = gamepad2.y;
+            boolean curTuneDown = gamepad2.a;
+            if (curTuneUp && !lastTuneUp) {
+                switch (tunableIndex) {
+                    case 0: kP *= 1.1; break;
+                    case 1: kI *= 1.1; break;
+                    case 2: kV *= 1.1; break;
+                    case 3: burstBoostFraction *= 1.1; break;
+                }
+            } else if (curTuneDown && !lastTuneDown) {
+                switch (tunableIndex) {
+                    case 0: kP /= 1.1; break;
+                    case 1: kI /= 1.1; break;
+                    case 2: kV /= 1.1; break;
+                    case 3: burstBoostFraction /= 1.1; break;
+                }
+            }
+            lastTuneUp = curTuneUp;
+            lastTuneDown = curTuneDown;
+
             // =========================================================
             // 3. PID DEL SHOOTER (con recuperación agresiva para ráfagas)
             // =========================================================
@@ -347,7 +390,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     burstActive = false;
                 }
             }
-            double effTarget = burstActive ? targetRPM * (1.0 + BURST_BOOST_FRACTION) : targetRPM;
+            double effTarget = burstActive ? targetRPM * (1.0 + burstBoostFraction) : targetRPM;
 
             double error = effTarget - currentRPM;
             double dt = pidTimer.seconds();
@@ -457,6 +500,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
                 telemetry.addData("Shooter potencia / ticks/s / posición", "%.2f / %.0f / %d",
                         lastShooterPower, shooter.getVelocity(), shooter.getCurrentPosition());
+                telemetry.addData("Ajuste en vivo (LB/RB elige, Y sube, A baja)",
+                        "%s = %.6f", TUNABLE_NAMES[tunableIndex], getTunableValue(tunableIndex));
                 telemetry.update();
                 telemetryTimer.reset();
             }
@@ -468,6 +513,16 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         shooter.setPower(0.0);
         turret.setPower(0.0);
         limelight.stop();
+    }
+
+    private double getTunableValue(int index) {
+        switch (index) {
+            case 0: return kP;
+            case 1: return kI;
+            case 2: return kV;
+            case 3: return burstBoostFraction;
+            default: return 0.0;
+        }
     }
 
     private static double clamp(double value, double maxAbs) {
