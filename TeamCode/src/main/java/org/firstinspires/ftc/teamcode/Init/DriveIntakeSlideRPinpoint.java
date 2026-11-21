@@ -156,7 +156,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
         shooter = hardwareMap.get(DcMotorEx.class, "shooter");
         shooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-        shooter.setDirection(DcMotor.Direction.FORWARD);
+        shooter.setDirection(DcMotor.Direction.REVERSE);
         shooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
 
         turret = hardwareMap.get(DcMotorEx.class, "turret");

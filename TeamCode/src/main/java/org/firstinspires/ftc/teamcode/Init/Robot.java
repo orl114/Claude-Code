@@ -20,10 +20,12 @@ public class Robot {
 
         mI1 = hardwareMap.get(DcMotorEx.class, "mI1");
         mI1.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        mI1.setDirection(DcMotor.Direction.REVERSE);
         mI1.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
 
         mI2 = hardwareMap.get(DcMotorEx.class, "mI2");
         mI2.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        mI2.setDirection(DcMotor.Direction.REVERSE);
         mI2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
 
         telemetry.addLine("Robot listo");
