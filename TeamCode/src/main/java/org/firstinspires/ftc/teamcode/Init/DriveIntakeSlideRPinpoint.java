@@ -38,8 +38,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // SubSistemas
     private DcMotorEx shooter;
     private DcMotorEx turret;
-    private DcMotorEx mI1; // motor de ADELANTE del intake
-    private DcMotorEx mI2; // motor de ATRÁS del intake
+    // mI1/mI2 (motores del intake) ahora viven en Robot, como robot.mI1 / robot.mI2.
     private VoltageSensor batteryVoltageSensor;
 
     // Tolerancia de RPM para disparo
@@ -164,14 +163,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         turret.setDirection(DcMotor.Direction.REVERSE);
         turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
         turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-
-        mI1 = hardwareMap.get(DcMotorEx.class, "mI1");
-        mI1.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-        mI1.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-
-        mI2 = hardwareMap.get(DcMotorEx.class, "mI2");
-        mI2.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-        mI2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
 
         RevHubOrientationOnRobot orientation = new RevHubOrientationOnRobot(
                 RevHubOrientationOnRobot.LogoFacingDirection.BACKWARD,
@@ -443,8 +434,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 mi1Power = -1.0 * INTAKE_POWER_SCALE;
             }
 
-            mI1.setPower(mi1Power);
-            mI2.setPower(mi2Power);
+            robot.mI1.setPower(mi1Power);
+            robot.mI2.setPower(mi2Power);
 
             // =========================================================
             // 5. TELEMETRÍA CONTROLADA (Cada 100ms)
@@ -472,8 +463,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         }
 
         chassis.stopChassis();
-        mI1.setPower(0.0);
-        mI2.setPower(0.0);
+        robot.mI1.setPower(0.0);
+        robot.mI2.setPower(0.0);
         shooter.setPower(0.0);
         turret.setPower(0.0);
         limelight.stop();
