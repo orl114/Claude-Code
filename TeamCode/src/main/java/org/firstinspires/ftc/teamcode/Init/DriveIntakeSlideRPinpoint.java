@@ -50,8 +50,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double GEAR_RATIO = 1.0; // pendiente: medir dientes de los engranajes (dientes torreta / dientes piñón)
     private static final double TICKS_PER_DEGREE = (MOTOR_TICKS_PER_REV * GEAR_RATIO) / 360.0;
 
-    private static final double MAX_TURRET_ANGLE_DEG = 100.0;
-    private static final double MIN_TURRET_ANGLE_DEG = -100.0;
+    private static final double MAX_TURRET_ANGLE_DEG = 340.0;
+    private static final double MIN_TURRET_ANGLE_DEG = -340.0;
     private static final double MAX_TURRET_TICKS = MAX_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
@@ -62,11 +62,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Límite suave del auto-aim: si el objetivo queda más allá, la torreta se queda en el límite
     // (sin desenredar) y la telemetría pide girar el chasis. Evita el ciclo apuntar -> desenredar -> apuntar.
-    private static final double AUTO_AIM_LIMIT_DEG = 88.0;
+    private static final double AUTO_AIM_LIMIT_DEG = 325.0;
 
     // Desenredado de cables (seguridad): solo se activa si la torreta pasa del límite suave
     // (inercia o tras el control manual). Vuelve hacia el centro hasta quedar cerca de 0°.
-    private static final double UNWIND_THRESHOLD_DEG = 95.0;
+    private static final double UNWIND_THRESHOLD_DEG = 335.0;
     private static final double UNWIND_EXIT_DEG = 10.0;
     private static final double UNWIND_MAX_POWER = 0.60;
     private static final double UNWIND_KP = 0.02;
@@ -292,9 +292,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     if (tagLostTimer.seconds() < TAG_MEMORY_TIMEOUT) {
                         desiredTurretPower = gyroFeedForward;
                     } else {
-                        if (turretAngleDeg >= 45.0) {
+                        // Barre casi hasta el límite físico, para encontrar el tag de la cara
+                        // de atrás del gol cuando el de enfrente queda oculto.
+                        if (turretAngleDeg >= AUTO_AIM_LIMIT_DEG) {
                             sweepDirectionRight = false;
-                        } else if (turretAngleDeg <= -45.0) {
+                        } else if (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG) {
                             sweepDirectionRight = true;
                         }
                         desiredTurretPower = (sweepDirectionRight ? SWEEP_POWER : -SWEEP_POWER) + gyroFeedForward;
@@ -403,12 +405,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             // =========================================================
             // 4. GAMEPAD 1: CHASIS (más lento con "A") E INTAKE DE DOS MOTORES (AL 80%)
             // =========================================================
-            // El bumper derecho se movió a "A" porque R1 ahora controla el motor de adelante del intake.
+            // El bumper derecho se movió a "A" porque R1/L1 ahora controlan el intake.
             double driveScale = gamepad1.a ? SHOOT_SPEED_SCALE : 1.0;
 
-            // Field-centric siempre activo. Con el bumper izquierdo (gamepad 1) y el robot mirando
-            // al frente del campo, se recalibra el yaw del IMU.
-            if (gamepad1.left_bumper) {
+            // Field-centric siempre activo. Con "Y" (gamepad 1) y el robot mirando al frente del
+            // campo, se recalibra el yaw del IMU. Se movió aquí desde left_bumper, que ahora
+            // suelta los dos motores del intake.
+            if (gamepad1.y) {
                 imu.resetYaw();
                 startHeading = 0.0;
             }
@@ -419,21 +422,29 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             double robotRight = fieldFwd * Math.sin(hRad) + fieldRight * Math.cos(hRad);
             chassis.move2(-robotFwd, robotRight, gamepad1.right_stick_x * driveScale);
 
-            // Intake: gatillo izquierdo (agarrar) y gatillo derecho (sacar) mueven mI1 y mI2 juntos.
-            // R1 (right_bumper), sin gatillos presionados, mueve SOLO mI1 (motor de adelante) en "sacar".
-            if (gamepad1.left_trigger > 0.2) {
-                mI1.setPower(1.0 * INTAKE_POWER_SCALE);
-                mI2.setPower(1.0 * INTAKE_POWER_SCALE);
-            } else if (gamepad1.right_trigger > 0.2) {
-                mI1.setPower(-1.0 * INTAKE_POWER_SCALE);
-                mI2.setPower(-1.0 * INTAKE_POWER_SCALE);
-            } else if (gamepad1.right_bumper) {
-                mI1.setPower(-1.0 * INTAKE_POWER_SCALE);
-                mI2.setPower(0.0);
-            } else {
-                mI1.setPower(0.0);
-                mI2.setPower(0.0);
+            // Intake:
+            // - R1 (right_bumper) agarra con mI1 y mI2 juntos; L1 (left_bumper) suelta los dos juntos.
+            // - R2 (right_trigger) agarra SOLO con mI1; L2 (left_trigger) suelta SOLO con mI1.
+            // Los gatillos (R2/L2) mandan sobre los bumpers en mI1, por si se presionan a la vez.
+            double mi1Power = 0.0;
+            double mi2Power = 0.0;
+
+            if (gamepad1.right_bumper) {
+                mi1Power = 1.0 * INTAKE_POWER_SCALE;
+                mi2Power = 1.0 * INTAKE_POWER_SCALE;
+            } else if (gamepad1.left_bumper) {
+                mi1Power = -1.0 * INTAKE_POWER_SCALE;
+                mi2Power = -1.0 * INTAKE_POWER_SCALE;
             }
+
+            if (gamepad1.right_trigger > 0.2) {
+                mi1Power = 1.0 * INTAKE_POWER_SCALE;
+            } else if (gamepad1.left_trigger > 0.2) {
+                mi1Power = -1.0 * INTAKE_POWER_SCALE;
+            }
+
+            mI1.setPower(mi1Power);
+            mI2.setPower(mi2Power);
 
             // =========================================================
             // 5. TELEMETRÍA CONTROLADA (Cada 100ms)
