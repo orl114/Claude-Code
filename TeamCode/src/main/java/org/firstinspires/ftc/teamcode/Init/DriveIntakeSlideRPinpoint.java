@@ -174,8 +174,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         mI2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
 
         RevHubOrientationOnRobot orientation = new RevHubOrientationOnRobot(
-                RevHubOrientationOnRobot.LogoFacingDirection.UP,
-                RevHubOrientationOnRobot.UsbFacingDirection.FORWARD
+                RevHubOrientationOnRobot.LogoFacingDirection.BACKWARD,
+                RevHubOrientationOnRobot.UsbFacingDirection.RIGHT
         );
         imu.initialize(new IMU.Parameters(orientation));
         if (RESET_YAW_ON_INIT) {
