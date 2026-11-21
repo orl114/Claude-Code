@@ -472,7 +472,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         }
 
         chassis.stopChassis();
-        robot.moveIntake(0);
         mI1.setPower(0.0);
         mI2.setPower(0.0);
         shooter.setPower(0.0);
