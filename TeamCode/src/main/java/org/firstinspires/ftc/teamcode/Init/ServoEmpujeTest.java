@@ -5,7 +5,7 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.Servo;
 
 /**
- * Prueba del servo lineal "servoEmpuje 1", sin chasis, intake, shooter, torreta ni Limelight.
+ * Prueba del servo lineal "servoEmpuje1", sin chasis, intake, shooter, torreta ni Limelight.
  *
  * - Botón X (gamepad 1): alterna entre metido y sacado cada vez que se presiona
  *   (no se repite si se mantiene presionado).
@@ -22,7 +22,7 @@ public class ServoEmpujeTest extends LinearOpMode {
 
     @Override
     public void runOpMode() {
-        Servo empujador = hardwareMap.get(Servo.class, "servoEmpuje 1");
+        Servo empujador = hardwareMap.get(Servo.class, "servoEmpuje1");
         empujador.setPosition(POSICION_ADENTRO);
 
         boolean afuera = false;
