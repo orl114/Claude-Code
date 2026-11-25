@@ -58,7 +58,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
     private static final double MAX_TURRET_POWER = 0.75;
-    private static final double MIN_TURRET_POWER = 0.08;
+    // Potencia mínima para vencer la fricción (engranes cónicos + reducción 5:1). Ajustable en vivo:
+    // si la torreta pega un jalón seco al empezar a corregir, bájala.
+    private double minTurretPower = 0.06;
     private static final double MANUAL_TURRET_POWER_SCALE = 0.50;
     private static final double MANUAL_OVERRIDE_DEADZONE = 0.10;
 
@@ -80,8 +82,20 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double CENTER_TOLERANCE_DEG = 1.0;
 
     private static final double DEADZONE_TX = 0.50;
-    private static final double ALIGN_KP = 0.035;
+    // Apuntado: control PD sobre tx. alignKp empuja hacia el tag, alignKd lo frena antes de
+    // llegar para que no se pase y quede oscilando. Los dos son ajustables en vivo.
+    private double alignKp = 0.055;
+    private double alignKd = 0.004;
     private static final double GYRO_FF_KP = 0.003;
+
+    // Derivada de tx: la Limelight manda frames más lento que el loop, así que entre frames tx
+    // no cambia. Si se calculara la derivada en cada vuelta daría 0 casi siempre y un pico al
+    // llegar el frame nuevo. Por eso solo se recalcula cuando de verdad llega un frame nuevo
+    // (la antigüedad del dato baja de golpe) y entre frames se conserva el último valor.
+    private double txRate = 0.0;
+    private double lastTxAtFrame = 0.0;
+    private double lastStalenessForRate = Double.MAX_VALUE;
+    private final ElapsedTime frameTimer = new ElapsedTime();
     private static final double GYRO_FF_SIGN = 1.0;
 
     // Resultados de la Limelight más viejos que esto (ms) se ignoran
@@ -127,7 +141,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // --- Ajuste en vivo de kP/kI/kV/boost de ráfaga (gamepad 2) ---
     // LB/RB eligen el parámetro; Y sube, A baja (x1.1 / ÷1.1 cada pulsación).
-    private static final String[] TUNABLE_NAMES = {"kP", "kI", "kV", "Boost ráfaga"};
+    private static final String[] TUNABLE_NAMES = {
+            "kP", "kI", "kV", "Boost ráfaga", "Aim kP", "Aim kD", "Aim pot. mín"};
     private int tunableIndex = 0;
     private boolean lastTuneLeft = false;
     private boolean lastTuneRight = false;
@@ -291,11 +306,23 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     pipelineTimer.reset(); // con tag visible se queda en el pipeline actual
                     double tx = result.getTx();
 
+                    // Solo con frame nuevo (la antigüedad del dato bajó) se recalcula la derivada.
+                    if (lastLLStaleness < lastStalenessForRate) {
+                        double dtFrame = frameTimer.seconds();
+                        if (dtFrame > 0.001) {
+                            txRate = (tx - lastTxAtFrame) / dtFrame;
+                        }
+                        lastTxAtFrame = tx;
+                        frameTimer.reset();
+                    }
+                    lastStalenessForRate = lastLLStaleness;
+
                     if (Math.abs(tx) > DEADZONE_TX) {
-                        desiredTurretPower = (tx * ALIGN_KP) + gyroFeedForward;
+                        // PD: el término derivativo frena conforme se acerca, para no pasarse.
+                        desiredTurretPower = (tx * alignKp) + (txRate * alignKd) + gyroFeedForward;
                         desiredTurretPower = clamp(desiredTurretPower, MAX_TURRET_POWER);
-                        if (Math.abs(desiredTurretPower) < MIN_TURRET_POWER) {
-                            desiredTurretPower = (desiredTurretPower > 0) ? MIN_TURRET_POWER : -MIN_TURRET_POWER;
+                        if (Math.abs(desiredTurretPower) < minTurretPower) {
+                            desiredTurretPower = (desiredTurretPower > 0) ? minTurretPower : -minTurretPower;
                         }
                     } else {
                         desiredTurretPower = gyroFeedForward;
@@ -378,6 +405,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 1: kI *= 1.1; break;
                     case 2: kV *= 1.1; break;
                     case 3: burstBoostFraction *= 1.1; break;
+                    case 4: alignKp *= 1.1; break;
+                    case 5: alignKd *= 1.1; break;
+                    case 6: minTurretPower *= 1.1; break;
                 }
             } else if (curTuneDown && !lastTuneDown) {
                 switch (tunableIndex) {
@@ -385,6 +415,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 1: kI /= 1.1; break;
                     case 2: kV /= 1.1; break;
                     case 3: burstBoostFraction /= 1.1; break;
+                    case 4: alignKp /= 1.1; break;
+                    case 5: alignKd /= 1.1; break;
+                    case 6: minTurretPower /= 1.1; break;
                 }
             }
             lastTuneUp = curTuneUp;
@@ -522,6 +555,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Pipeline Limelight", currentPipeline);
                 telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
                         lastLLResultIsNull, lastLLValid, lastLLTa, lastLLStaleness, lastLLFiducialCount);
+                telemetry.addData("Aim tx / velocidad tx", "%.2f° / %.1f °/s", lastTxAtFrame, txRate);
                 telemetry.addData("Ángulo Torreta", "%.1f° (Max ±100°)", turretAngleDeg);
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
@@ -549,6 +583,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             case 1: return kI;
             case 2: return kV;
             case 3: return burstBoostFraction;
+            case 4: return alignKp;
+            case 5: return alignKd;
+            case 6: return minTurretPower;
             default: return 0.0;
         }
     }
