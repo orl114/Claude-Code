@@ -34,6 +34,15 @@ public class PureChassisTeleOp extends LinearOpMode {
         frontRight.setDirection(DcMotor.Direction.FORWARD);
         backRight.setDirection(DcMotor.Direction.FORWARD);
 
+        // Sin esto, el hub intenta regular la potencia con el encoder de cada motor
+        // (RUN_USING_ENCODER, el modo por defecto): si algún encoder no responde igual de bien
+        // que los demás, cada rueda recibe potencia distinta aunque pidas lo mismo, y el robot
+        // va lento y se desvía en vez de ir derecho.
+        frontLeft.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        frontRight.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        backLeft.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        backRight.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
         frontLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
