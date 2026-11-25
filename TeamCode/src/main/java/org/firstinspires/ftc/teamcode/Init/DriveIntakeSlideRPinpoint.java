@@ -46,14 +46,15 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Configuración Torreta
     private static final double MOTOR_TICKS_PER_REV = 537.7;
-    // Calculado a partir de lo medido en cancha: con GEAR_RATIO=1.0 la torreta se topaba con el
-    // límite de software (340°) habiendo girado solo 180° de verdad, o sea 340/180 ≈ 1.89 de reducción.
-    // Si al probar no llega exacto a 340°, ajusta este número y lo recalculamos con el nuevo dato.
-    private static final double GEAR_RATIO = 340.0 / 180.0; // ≈ 1.8889 (dientes torreta / dientes piñón)
+    // Pendiente: medir con TurretEncoderTest (gira la torreta a mano por un ángulo exacto y lee
+    // el encoder) o contando dientes (dientes torreta / dientes piñón). 1.0 es solo un valor base.
+    private static final double GEAR_RATIO = 1.0;
     private static final double TICKS_PER_DEGREE = (MOTOR_TICKS_PER_REV * GEAR_RATIO) / 360.0;
 
-    private static final double MAX_TURRET_ANGLE_DEG = 340.0;
-    private static final double MIN_TURRET_ANGLE_DEG = -340.0;
+    // Bajados a valores seguros hasta calibrar GEAR_RATIO con TurretEncoderTest: hay un tope
+    // mecánico real (no de cable) cerca de los 180° que todavía no está medido con precisión.
+    private static final double MAX_TURRET_ANGLE_DEG = 100.0;
+    private static final double MIN_TURRET_ANGLE_DEG = -100.0;
     private static final double MAX_TURRET_TICKS = MAX_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
@@ -64,11 +65,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Límite suave del auto-aim: si el objetivo queda más allá, la torreta se queda en el límite
     // (sin desenredar) y la telemetría pide girar el chasis. Evita el ciclo apuntar -> desenredar -> apuntar.
-    private static final double AUTO_AIM_LIMIT_DEG = 325.0;
+    private static final double AUTO_AIM_LIMIT_DEG = 88.0;
 
     // Desenredado de cables (seguridad): solo se activa si la torreta pasa del límite suave
     // (inercia o tras el control manual). Vuelve hacia el centro hasta quedar cerca de 0°.
-    private static final double UNWIND_THRESHOLD_DEG = 335.0;
+    private static final double UNWIND_THRESHOLD_DEG = 95.0;
     private static final double UNWIND_EXIT_DEG = 10.0;
     private static final double UNWIND_MAX_POWER = 0.60;
     private static final double UNWIND_KP = 0.02;
