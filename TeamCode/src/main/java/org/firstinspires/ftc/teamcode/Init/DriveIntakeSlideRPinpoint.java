@@ -46,7 +46,10 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Configuración Torreta
     private static final double MOTOR_TICKS_PER_REV = 537.7;
-    private static final double GEAR_RATIO = 1.0; // pendiente: medir dientes de los engranajes (dientes torreta / dientes piñón)
+    // Calculado a partir de lo medido en cancha: con GEAR_RATIO=1.0 la torreta se topaba con el
+    // límite de software (340°) habiendo girado solo 180° de verdad, o sea 340/180 ≈ 1.89 de reducción.
+    // Si al probar no llega exacto a 340°, ajusta este número y lo recalculamos con el nuevo dato.
+    private static final double GEAR_RATIO = 340.0 / 180.0; // ≈ 1.8889 (dientes torreta / dientes piñón)
     private static final double TICKS_PER_DEGREE = (MOTOR_TICKS_PER_REV * GEAR_RATIO) / 360.0;
 
     private static final double MAX_TURRET_ANGLE_DEG = 340.0;
