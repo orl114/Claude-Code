@@ -50,9 +50,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double GEAR_RATIO = 120.0 / 24.0; // = 5.0
     private static final double TICKS_PER_DEGREE = (MOTOR_TICKS_PER_REV * GEAR_RATIO) / 360.0;
 
-    // Tope mecánico real medido a mano: ~190° de cada lado. Se deja 15° de margen de seguridad.
-    private static final double MAX_TURRET_ANGLE_DEG = 175.0;
-    private static final double MIN_TURRET_ANGLE_DEG = -175.0;
+    // Tope mecánico real medido a mano: ~190° de cada lado.
+    private static final double MAX_TURRET_ANGLE_DEG = 165.0;
+    private static final double MIN_TURRET_ANGLE_DEG = -165.0;
     private static final double MAX_TURRET_TICKS = MAX_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
@@ -63,11 +63,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Límite suave del auto-aim: si el objetivo queda más allá, la torreta se queda en el límite
     // (sin desenredar) y la telemetría pide girar el chasis. Evita el ciclo apuntar -> desenredar -> apuntar.
-    private static final double AUTO_AIM_LIMIT_DEG = 160.0;
+    private static final double AUTO_AIM_LIMIT_DEG = 150.0;
 
     // Desenredado de cables (seguridad): solo se activa si la torreta pasa del límite suave
     // (inercia o tras el control manual). Vuelve hacia el centro hasta quedar cerca de 0°.
-    private static final double UNWIND_THRESHOLD_DEG = 185.0;
+    private static final double UNWIND_THRESHOLD_DEG = 175.0;
     private static final double UNWIND_EXIT_DEG = 10.0;
     private static final double UNWIND_MAX_POWER = 0.60;
     private static final double UNWIND_KP = 0.02;
