@@ -81,21 +81,37 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double CENTER_MAX_POWER = 0.40;
     private static final double CENTER_TOLERANCE_DEG = 1.0;
 
-    private static final double DEADZONE_TX = 0.50;
-    // Apuntado: control PD sobre tx. alignKp empuja hacia el tag, alignKd lo frena antes de
-    // llegar para que no se pase y quede oscilando. Los dos son ajustables en vivo.
-    private double alignKp = 0.055;
-    private double alignKd = 0.004;
+    private static final double DEADZONE_TX = 0.50; // error de apuntado que ya se considera "centrado"
     private static final double GYRO_FF_KP = 0.003;
 
-    // Derivada de tx: la Limelight manda frames más lento que el loop, así que entre frames tx
-    // no cambia. Si se calculara la derivada en cada vuelta daría 0 casi siempre y un pico al
-    // llegar el frame nuevo. Por eso solo se recalcula cuando de verdad llega un frame nuevo
-    // (la antigüedad del dato baja de golpe) y entre frames se conserva el último valor.
-    private double txRate = 0.0;
-    private double lastTxAtFrame = 0.0;
-    private double lastStalenessForRate = Double.MAX_VALUE;
-    private final ElapsedTime frameTimer = new ElapsedTime();
+    // ===== Apuntado en cascada (visión + encoder de la torreta) =====
+    // La cámara manda frames lento y con retraso; el encoder se lee en cada vuelta del loop.
+    // Por eso la visión NO maneja el motor directamente: cuando llega un frame nuevo solo fija
+    // un ÁNGULO OBJETIVO, y un PD sobre el encoder persigue ese ángulo en cada vuelta.
+    // Así la torreta reacciona al ritmo del loop y se frena con la velocidad real del motor,
+    // en vez de ir dando tumbos cada vez que llega un frame.
+    private double aimKp = 0.055;  // potencia por grado de error de ángulo
+    private double aimKd = 0.002;  // frenado por cada grado/segundo que gira la torreta
+
+    private double aimTargetAngleDeg = 0.0;
+    private boolean aimTargetValid = false;
+    private double lastStalenessForFrame = Double.MAX_VALUE;
+    private double turretRateDegPerSec = 0.0;
+
+    // Abajo de esta velocidad se considera que la torreta está detenida, y ahí sí se aplica la
+    // potencia mínima para vencer la fricción. Yendo en movimiento no se aplica, porque taparía
+    // el frenado del término derivativo.
+    private static final double STATIC_RATE_DEG_PER_SEC = 5.0;
+
+    // Historial de ángulos de la torreta, para compensar el retraso de la cámara: el tx que
+    // llega ahora se midió hace "staleness" milisegundos, cuando la torreta estaba en otro
+    // ángulo. Sumarlo al ángulo actual deja el objetivo corrido y hace que se pase.
+    private static final int ANGLE_HISTORY_SIZE = 128;
+    private final double[] angleHistoryDeg = new double[ANGLE_HISTORY_SIZE];
+    private final double[] angleHistoryMs = new double[ANGLE_HISTORY_SIZE];
+    private int angleHistoryCount = 0;
+    private int angleHistoryIndex = 0;
+    private final ElapsedTime aimClock = new ElapsedTime();
     private static final double GYRO_FF_SIGN = 1.0;
 
     // Resultados de la Limelight más viejos que esto (ms) se ignoran
@@ -260,8 +276,18 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
             double turretPositionTicks = turret.getCurrentPosition();
             double turretAngleDeg = turretPositionTicks / TICKS_PER_DEGREE;
+            turretRateDegPerSec = turret.getVelocity() / TICKS_PER_DEGREE;
             double desiredTurretPower = 0;
             boolean targetOutOfRange = false;
+
+            // Guarda el ángulo de este instante, para poder consultar después en qué ángulo
+            // estaba la torreta cuando la cámara tomó la foto que llegue más adelante.
+            angleHistoryMs[angleHistoryIndex] = aimClock.milliseconds();
+            angleHistoryDeg[angleHistoryIndex] = turretAngleDeg;
+            angleHistoryIndex = (angleHistoryIndex + 1) % ANGLE_HISTORY_SIZE;
+            if (angleHistoryCount < ANGLE_HISTORY_SIZE) {
+                angleHistoryCount++;
+            }
 
             // Desenredado de cables (con histéresis)
             if (Math.abs(turretAngleDeg) >= UNWIND_THRESHOLD_DEG) {
@@ -306,27 +332,17 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     pipelineTimer.reset(); // con tag visible se queda en el pipeline actual
                     double tx = result.getTx();
 
-                    // Solo con frame nuevo (la antigüedad del dato bajó) se recalcula la derivada.
-                    if (lastLLStaleness < lastStalenessForRate) {
-                        double dtFrame = frameTimer.seconds();
-                        if (dtFrame > 0.001) {
-                            txRate = (tx - lastTxAtFrame) / dtFrame;
-                        }
-                        lastTxAtFrame = tx;
-                        frameTimer.reset();
+                    // Frame nuevo (la antigüedad del dato bajó de golpe): la visión fija el
+                    // ángulo objetivo. Se parte del ángulo que tenía la torreta CUANDO se tomó
+                    // la foto, no del de ahora, porque en ese rato la torreta ya se movió.
+                    if (lastLLStaleness < lastStalenessForFrame) {
+                        double angleAtCapture = turretAngleAtMsAgo(lastLLStaleness, turretAngleDeg);
+                        aimTargetAngleDeg = angleAtCapture + tx;
+                        aimTargetValid = true;
                     }
-                    lastStalenessForRate = lastLLStaleness;
+                    lastStalenessForFrame = lastLLStaleness;
 
-                    if (Math.abs(tx) > DEADZONE_TX) {
-                        // PD: el término derivativo frena conforme se acerca, para no pasarse.
-                        desiredTurretPower = (tx * alignKp) + (txRate * alignKd) + gyroFeedForward;
-                        desiredTurretPower = clamp(desiredTurretPower, MAX_TURRET_POWER);
-                        if (Math.abs(desiredTurretPower) < minTurretPower) {
-                            desiredTurretPower = (desiredTurretPower > 0) ? minTurretPower : -minTurretPower;
-                        }
-                    } else {
-                        desiredTurretPower = gyroFeedForward;
-                    }
+                    desiredTurretPower = aimPower(aimTargetAngleDeg, turretAngleDeg, gyroFeedForward);
 
                     // Límite suave: no seguir el objetivo más allá de AUTO_AIM_LIMIT_DEG
                     if ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && desiredTurretPower > 0)
@@ -343,8 +359,18 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         pipelineTimer.reset();
                     }
                     if (tagLostTimer.seconds() < TAG_MEMORY_TIMEOUT) {
-                        desiredTurretPower = gyroFeedForward;
+                        // Parpadeo corto del tag: sigue persiguiendo el último ángulo conocido
+                        // en vez de frenarse, así termina el movimiento que traía.
+                        desiredTurretPower = aimTargetValid
+                                ? aimPower(aimTargetAngleDeg, turretAngleDeg, gyroFeedForward)
+                                : gyroFeedForward;
+                        if ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && desiredTurretPower > 0)
+                                || (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG && desiredTurretPower < 0)) {
+                            desiredTurretPower = 0.0;
+                            targetOutOfRange = true;
+                        }
                     } else {
+                        aimTargetValid = false; // el objetivo viejo ya no sirve, toca buscar
                         // Barre casi hasta el límite físico, para encontrar el tag de la cara
                         // de atrás del gol cuando el de enfrente queda oculto.
                         if (turretAngleDeg >= AUTO_AIM_LIMIT_DEG) {
@@ -405,8 +431,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 1: kI *= 1.1; break;
                     case 2: kV *= 1.1; break;
                     case 3: burstBoostFraction *= 1.1; break;
-                    case 4: alignKp *= 1.1; break;
-                    case 5: alignKd *= 1.1; break;
+                    case 4: aimKp *= 1.1; break;
+                    case 5: aimKd *= 1.1; break;
                     case 6: minTurretPower *= 1.1; break;
                 }
             } else if (curTuneDown && !lastTuneDown) {
@@ -415,8 +441,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 1: kI /= 1.1; break;
                     case 2: kV /= 1.1; break;
                     case 3: burstBoostFraction /= 1.1; break;
-                    case 4: alignKp /= 1.1; break;
-                    case 5: alignKd /= 1.1; break;
+                    case 4: aimKp /= 1.1; break;
+                    case 5: aimKd /= 1.1; break;
                     case 6: minTurretPower /= 1.1; break;
                 }
             }
@@ -555,8 +581,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Pipeline Limelight", currentPipeline);
                 telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
                         lastLLResultIsNull, lastLLValid, lastLLTa, lastLLStaleness, lastLLFiducialCount);
-                telemetry.addData("Aim tx / velocidad tx", "%.2f° / %.1f °/s", lastTxAtFrame, txRate);
-                telemetry.addData("Ángulo Torreta", "%.1f° (Max ±100°)", turretAngleDeg);
+                telemetry.addData("Aim objetivo / actual / error", "%.1f° / %.1f° / %.1f°",
+                        aimTargetAngleDeg, turretAngleDeg,
+                        aimTargetValid ? (aimTargetAngleDeg - turretAngleDeg) : 0.0);
+                telemetry.addData("Velocidad torreta", "%.0f °/s", turretRateDegPerSec);
+                telemetry.addData("Ángulo Torreta", "%.1f° (Max ±%.0f°)", turretAngleDeg, MAX_TURRET_ANGLE_DEG);
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
                 telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
@@ -577,14 +606,55 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         limelight.stop();
     }
 
+    /**
+     * Potencia para llevar la torreta al ángulo objetivo: PD sobre el encoder.
+     * El término derivativo usa la velocidad real medida por el encoder (no la derivada de tx),
+     * así frena al ritmo del loop y no al de la cámara.
+     */
+    private double aimPower(double targetAngleDeg, double currentAngleDeg, double gyroFeedForward) {
+        double angleError = targetAngleDeg - currentAngleDeg;
+        if (Math.abs(angleError) <= DEADZONE_TX) {
+            return gyroFeedForward;
+        }
+
+        double power = (angleError * aimKp) - (turretRateDegPerSec * aimKd) + gyroFeedForward;
+        power = clamp(power, MAX_TURRET_POWER);
+
+        // La potencia mínima solo cuando la torreta está prácticamente detenida: es para romper
+        // la fricción de arranque. Si se aplicara también en movimiento taparía el frenado del
+        // término derivativo y volvería a pasarse del objetivo.
+        if (Math.abs(power) < minTurretPower && Math.abs(turretRateDegPerSec) < STATIC_RATE_DEG_PER_SEC) {
+            power = (angleError > 0) ? minTurretPower : -minTurretPower;
+        }
+        return power;
+    }
+
+    /** Ángulo que tenía la torreta hace msAgo milisegundos, del historial. */
+    private double turretAngleAtMsAgo(double msAgo, double fallbackAngleDeg) {
+        if (angleHistoryCount == 0) {
+            return fallbackAngleDeg;
+        }
+        double targetMs = aimClock.milliseconds() - Math.max(0.0, msAgo);
+        double bestAngle = fallbackAngleDeg;
+        double bestDiff = Double.MAX_VALUE;
+        for (int i = 0; i < angleHistoryCount; i++) {
+            double diff = Math.abs(angleHistoryMs[i] - targetMs);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestAngle = angleHistoryDeg[i];
+            }
+        }
+        return bestAngle;
+    }
+
     private double getTunableValue(int index) {
         switch (index) {
             case 0: return kP;
             case 1: return kI;
             case 2: return kV;
             case 3: return burstBoostFraction;
-            case 4: return alignKp;
-            case 5: return alignKd;
+            case 4: return aimKp;
+            case 5: return aimKd;
             case 6: return minTurretPower;
             default: return 0.0;
         }
