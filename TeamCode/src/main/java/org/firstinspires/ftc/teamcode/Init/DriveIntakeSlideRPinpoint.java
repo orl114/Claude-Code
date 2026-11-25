@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.Init;
 
 import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.LLResultTypes;
 import com.qualcomm.hardware.limelightvision.Limelight3A;
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
@@ -85,6 +86,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Resultados de la Limelight más viejos que esto (ms) se ignoran
     private static final long MAX_LL_STALENESS_MS = 100;
+
+    // Diagnóstico de la Limelight (ver por qué tagVisible puede dar false), mostrado en telemetría.
+    private boolean lastLLResultIsNull = true;
+    private boolean lastLLValid = false;
+    private double lastLLTa = 0.0;
+    private double lastLLStaleness = -1;
+    private int lastLLFiducialCount = 0;
 
     // Configuración Flywheel (Recuperación rápida)
     private final double ENCODER_CPR = 28.0;
@@ -261,6 +269,22 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
                 boolean tagVisible = result != null && result.isValid() && result.getTa() > 0.0
                         && result.getStaleness() <= MAX_LL_STALENESS_MS;
+
+                // Diagnóstico: por qué tagVisible puede dar false aunque la Limelight sí detecte
+                // (se ve en su propia página web). Se muestra siempre en telemetría, abajo.
+                lastLLResultIsNull = result == null;
+                if (result != null) {
+                    lastLLValid = result.isValid();
+                    lastLLTa = result.getTa();
+                    lastLLStaleness = result.getStaleness();
+                    lastLLFiducialCount = result.getFiducialResults() != null
+                            ? result.getFiducialResults().size() : 0;
+                } else {
+                    lastLLValid = false;
+                    lastLLTa = 0.0;
+                    lastLLStaleness = -1;
+                    lastLLFiducialCount = 0;
+                }
 
                 if (tagVisible) {
                     tagLostTimer.reset();
@@ -496,6 +520,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 else modo = tagLostTimer.seconds() > TAG_MEMORY_TIMEOUT ? "BUSCANDO (Escaneo)" : "AUTO (Locked)";
                 telemetry.addData("Modo Torreta", modo);
                 telemetry.addData("Pipeline Limelight", currentPipeline);
+                telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
+                        lastLLResultIsNull, lastLLValid, lastLLTa, lastLLStaleness, lastLLFiducialCount);
                 telemetry.addData("Ángulo Torreta", "%.1f° (Max ±100°)", turretAngleDeg);
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
