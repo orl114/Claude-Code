@@ -46,9 +46,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Configuración Torreta
     private static final double MOTOR_TICKS_PER_REV = 537.7;
-    // Pendiente: medir con TurretEncoderTest (gira la torreta a mano por un ángulo exacto y lee
-    // el encoder) o contando dientes (dientes torreta / dientes piñón). 1.0 es solo un valor base.
-    private static final double GEAR_RATIO = 1.0;
+    // Medido contando dientes: engrane de la torreta 120T, piñón del motor 24T.
+    private static final double GEAR_RATIO = 120.0 / 24.0; // = 5.0
     private static final double TICKS_PER_DEGREE = (MOTOR_TICKS_PER_REV * GEAR_RATIO) / 360.0;
 
     // Bajados a valores seguros hasta calibrar GEAR_RATIO con TurretEncoderTest: hay un tope
