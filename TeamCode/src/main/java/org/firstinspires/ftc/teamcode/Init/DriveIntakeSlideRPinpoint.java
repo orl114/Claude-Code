@@ -101,10 +101,15 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // valores pide unos 2.5 °/s por cada grado de error, una velocidad desde la que sí alcanza
     // a frenar. Antes pedía 27 °/s por grado y por eso llegaba pegando y se pasaba de largo.
     private double aimKp = 0.035;  // potencia por grado de error de ángulo
-    private double aimKd = 0.008;  // potencia por cada grado/segundo de diferencia de velocidad
+    private double aimKd = 0.008;  // frenado por cada grado/segundo que gira la torreta
+    // Acompañar la velocidad del objetivo. ARRANCA EN 0 (apagado): sirve para no quedarse atrás
+    // de un blanco en movimiento, pero la estimación viene de la cámara y mete ruido, así que
+    // hay que subirlo a propósito y poco a poco, no tenerlo activo de base.
+    private double aimRateFf = 0.0;
 
     private double aimTargetAngleDeg = 0.0;
     private boolean aimTargetValid = false;
+    private double lastTx = 0.0; // último tx recibido, para el chequeo de signos en telemetría
     private double lastStalenessForFrame = Double.MAX_VALUE;
     private double turretRateDegPerSec = 0.0;
 
@@ -178,9 +183,12 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // --- Ajuste en vivo de kP/kI/kV/boost de ráfaga (gamepad 2) ---
     // LB/RB eligen el parámetro; Y sube, A baja (x1.1 / ÷1.1 cada pulsación).
     private static final String[] TUNABLE_NAMES = {
-            "kP", "kI", "kV", "Boost ráfaga", "Aim kP", "Aim kD", "Aim pot. mín", "Gyro FF"};
-    private static final int TUNABLE_GYRO_FF = 7; // este se ajusta sumando, no multiplicando,
-                                                  // para poder llegar a 0 y pasar a negativo
+            "kP", "kI", "kV", "Boost ráfaga", "Aim kP", "Aim kD", "Aim pot. mín",
+            "Gyro FF", "Aim rate FF"};
+    // Estos dos se ajustan sumando, no multiplicando, para poder llegar a 0 y pasar a negativo.
+    private static final int TUNABLE_GYRO_FF = 7;
+    private static final int TUNABLE_AIM_RATE_FF = 8;
+    private static final double AIM_RATE_FF_STEP = 0.0005;
     private int tunableIndex = 0;
     private boolean lastTuneLeft = false;
     private boolean lastTuneRight = false;
@@ -353,6 +361,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     tagLostTimer.reset();
                     pipelineTimer.reset(); // con tag visible se queda en el pipeline actual
                     double tx = result.getTx();
+                    lastTx = tx;
 
                     // Frame nuevo (la antigüedad del dato bajó de golpe): la visión fija el
                     // ángulo objetivo. Se parte del ángulo que tenía la torreta CUANDO se tomó
@@ -484,6 +493,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 5: aimKd *= 1.1; break;
                     case 6: minTurretPower *= 1.1; break;
                     case TUNABLE_GYRO_FF: gyroFfGain += GYRO_FF_STEP; break;
+                    case TUNABLE_AIM_RATE_FF: aimRateFf += AIM_RATE_FF_STEP; break;
                 }
             } else if (curTuneDown && !lastTuneDown) {
                 switch (tunableIndex) {
@@ -495,6 +505,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 5: aimKd /= 1.1; break;
                     case 6: minTurretPower /= 1.1; break;
                     case TUNABLE_GYRO_FF: gyroFfGain -= GYRO_FF_STEP; break;
+                    case TUNABLE_AIM_RATE_FF: aimRateFf -= AIM_RATE_FF_STEP; break;
                 }
             }
             lastTuneUp = curTuneUp;
@@ -641,6 +652,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         turretRateDegPerSec, aimTargetRateDegPerSec);
                 telemetry.addData("Giro chasis / compensación", "%.0f °/s -> %.2f pot.",
                         chassisYawRate, gyroFeedForward);
+                // CHEQUEO DE SIGNOS: con el robot quieto y el tag a la vista, mueve la torreta a
+                // mano (stick derecho del gamepad 2). Este número debe QUEDARSE QUIETO, porque es
+                // el ángulo absoluto hacia el tag y el tag no se movió.
+                // - Si se mueve igual que la torreta -> el signo de tx está al revés.
+                // - Si se mueve solo una parte -> la escala (GEAR_RATIO) no cuadra.
+                telemetry.addData("Chequeo ángulo+tx (debe ser fijo)", "%.1f°",
+                        turretAngleDeg + lastTx);
                 telemetry.addData("Ángulo Torreta", "%.1f° (Max ±%.0f°)", turretAngleDeg, MAX_TURRET_ANGLE_DEG);
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
@@ -673,11 +691,14 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             return gyroFeedForward;
         }
 
-        // El frenado va sobre la velocidad RELATIVA: si el objetivo se mueve, la torreta no es
-        // frenada por acompañarlo, solo por ir más rápido o más lento que él. Con el objetivo
-        // quieto es exactamente el frenado de antes.
-        double rateError = aimTargetRateDegPerSec - turretRateDegPerSec;
-        double power = (angleError * aimKp) + (rateError * aimKd) + gyroFeedForward;
+        // Frenado con la velocidad real de la torreta, más (opcional) acompañar la velocidad del
+        // objetivo. Ese segundo término va con su PROPIA ganancia y arranca en 0: la velocidad
+        // del objetivo se estima entre frames de cámara y es ruidosa, así que acoplada al frenado
+        // sacudía la torreta al moverse el robot. En 0 el comportamiento es puro PD.
+        double power = (angleError * aimKp)
+                - (turretRateDegPerSec * aimKd)
+                + (aimTargetRateDegPerSec * aimRateFf)
+                + gyroFeedForward;
         power = clamp(power, MAX_TURRET_POWER);
 
         // La potencia mínima solo cuando la torreta está prácticamente detenida: es para romper
@@ -717,6 +738,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             case 5: return aimKd;
             case 6: return minTurretPower;
             case TUNABLE_GYRO_FF: return gyroFfGain;
+            case TUNABLE_AIM_RATE_FF: return aimRateFf;
             default: return 0.0;
         }
     }
