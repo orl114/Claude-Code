@@ -83,7 +83,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // Error de apuntado que ya se considera "centrado". Si queda muy chico, la torreta no deja
     // de corregir de un lado a otro buscando una precisión que la mecánica no da.
     private static final double DEADZONE_TX = 1.50;
-    private static final double GYRO_FF_KP = 0.003;
+    // Compensación del giro del chasis: mantiene a la torreta apuntando al mismo lugar del campo
+    // mientras el robot gira. Es ajustable en vivo Y PUEDE SER NEGATIVO, porque el signo correcto
+    // depende de cómo quedó montado el Control Hub y de hacia dónde cuenta el encoder de la
+    // torreta. Con el signo al revés empuja a la torreta en contra justo al girar.
+    // Ponlo en 0 para apagarlo y comprobar si es el culpable.
+    private double gyroFfGain = 0.003;
+    private static final double GYRO_FF_STEP = 0.0005; // paso del ajuste en vivo (suma/resta)
 
     // ===== Apuntado en cascada (visión + encoder de la torreta) =====
     // La cámara manda frames lento y con retraso; el encoder se lee en cada vuelta del loop.
@@ -108,6 +114,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // acompaña el movimiento y el error que le queda por cerrar es mucho más chico.
     private double aimTargetRateDegPerSec = 0.0;
     private static final double AIM_RATE_FILTER = 0.35; // suaviza el ruido entre frames
+    // Tope a la velocidad estimada: un brinco de la cámara (reflejo, tag que parpadea) daría una
+    // velocidad enorme y eso se traduciría en un golpe de potencia en la dirección equivocada.
+    private static final double MAX_AIM_TARGET_RATE_DEG_PER_SEC = 180.0;
     private final ElapsedTime aimFrameTimer = new ElapsedTime();
 
     // Abajo de esta velocidad se considera que la torreta está detenida, y ahí sí se aplica la
@@ -124,7 +133,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private int angleHistoryCount = 0;
     private int angleHistoryIndex = 0;
     private final ElapsedTime aimClock = new ElapsedTime();
-    private static final double GYRO_FF_SIGN = 1.0;
 
     // Resultados de la Limelight más viejos que esto (ms) se ignoran
     private static final long MAX_LL_STALENESS_MS = 100;
@@ -170,7 +178,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // --- Ajuste en vivo de kP/kI/kV/boost de ráfaga (gamepad 2) ---
     // LB/RB eligen el parámetro; Y sube, A baja (x1.1 / ÷1.1 cada pulsación).
     private static final String[] TUNABLE_NAMES = {
-            "kP", "kI", "kV", "Boost ráfaga", "Aim kP", "Aim kD", "Aim pot. mín"};
+            "kP", "kI", "kV", "Boost ráfaga", "Aim kP", "Aim kD", "Aim pot. mín", "Gyro FF"};
+    private static final int TUNABLE_GYRO_FF = 7; // este se ajusta sumando, no multiplicando,
+                                                  // para poder llegar a 0 y pasar a negativo
     private int tunableIndex = 0;
     private boolean lastTuneLeft = false;
     private boolean lastTuneRight = false;
@@ -281,7 +291,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
             AngularVelocity angularVelocity = imu.getRobotAngularVelocity(AngleUnit.DEGREES);
             double chassisYawRate = angularVelocity.zRotationRate;
-            double gyroFeedForward = -chassisYawRate * GYRO_FF_KP * GYRO_FF_SIGN;
+            double gyroFeedForward = -chassisYawRate * gyroFfGain;
 
             // Auto-aim siempre activo; mover el stick derecho del gamepad 2 toma control manual mientras se mueve
             boolean manualOverride = Math.abs(gamepad2.right_stick_x) > MANUAL_OVERRIDE_DEADZONE;
@@ -359,6 +369,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                             double rawRate = (newTarget - aimTargetAngleDeg) / dtFrame;
                             aimTargetRateDegPerSec +=
                                     AIM_RATE_FILTER * (rawRate - aimTargetRateDegPerSec);
+                            aimTargetRateDegPerSec = clamp(
+                                    aimTargetRateDegPerSec, MAX_AIM_TARGET_RATE_DEG_PER_SEC);
                         } else {
                             aimTargetRateDegPerSec = 0.0;
                         }
@@ -446,8 +458,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 targetRPM = 0.0;
             }
 
-            // Ajuste en vivo de kP/kI/kV/boost de ráfaga: LB/RB elige el parámetro,
-            // Y sube y A baja ese valor (x1.1 / ÷1.1 por cada pulsación).
+            // Ajuste en vivo: LB/RB elige el parámetro, Y sube y A baja (x1.1 / ÷1.1 por
+            // pulsación; "Gyro FF" suma y resta, para poder llegar a 0 y pasar a negativo).
             boolean curTuneLeft = gamepad2.left_bumper;
             if (curTuneLeft && !lastTuneLeft) {
                 tunableIndex = (tunableIndex + TUNABLE_NAMES.length - 1) % TUNABLE_NAMES.length;
@@ -471,6 +483,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 4: aimKp *= 1.1; break;
                     case 5: aimKd *= 1.1; break;
                     case 6: minTurretPower *= 1.1; break;
+                    case TUNABLE_GYRO_FF: gyroFfGain += GYRO_FF_STEP; break;
                 }
             } else if (curTuneDown && !lastTuneDown) {
                 switch (tunableIndex) {
@@ -481,6 +494,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     case 4: aimKp /= 1.1; break;
                     case 5: aimKd /= 1.1; break;
                     case 6: minTurretPower /= 1.1; break;
+                    case TUNABLE_GYRO_FF: gyroFfGain -= GYRO_FF_STEP; break;
                 }
             }
             lastTuneUp = curTuneUp;
@@ -625,6 +639,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         aimTargetValid ? (aimTargetAngleDeg - turretAngleDeg) : 0.0);
                 telemetry.addData("Velocidad torreta / objetivo", "%.0f / %.0f °/s",
                         turretRateDegPerSec, aimTargetRateDegPerSec);
+                telemetry.addData("Giro chasis / compensación", "%.0f °/s -> %.2f pot.",
+                        chassisYawRate, gyroFeedForward);
                 telemetry.addData("Ángulo Torreta", "%.1f° (Max ±%.0f°)", turretAngleDeg, MAX_TURRET_ANGLE_DEG);
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
@@ -700,6 +716,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             case 4: return aimKp;
             case 5: return aimKd;
             case 6: return minTurretPower;
+            case TUNABLE_GYRO_FF: return gyroFfGain;
             default: return 0.0;
         }
     }
