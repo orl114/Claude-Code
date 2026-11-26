@@ -89,12 +89,29 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // Error de apuntado que ya se considera "centrado". Si queda muy chico, la torreta no deja
     // de corregir de un lado a otro buscando una precisión que la mecánica no da.
     private static final double DEADZONE_TX = 1.50;
-    // Compensación del giro del chasis: mantiene a la torreta apuntando al mismo lugar del campo
-    // mientras el robot gira. Es ajustable en vivo Y PUEDE SER NEGATIVO, porque el signo correcto
-    // depende de cómo quedó montado el Control Hub y de hacia dónde cuenta el encoder de la
-    // torreta. Con el signo al revés empuja a la torreta en contra justo al girar.
-    // Ponlo en 0 para apagarlo y comprobar si es el culpable.
-    private double gyroFfGain = 0.003;
+    // ===== Objetivo respecto al CAMPO =====
+    // El objetivo se guarda como "hacia dónde está el gol en la cancha" y se traduce a ángulo de
+    // torreta en cada vuelta con el IMU, que se lee al ritmo del loop. Antes se guardaba relativo
+    // al chasis y solo se actualizaba con cada frame de cámara: si el chasis giraba entre frames,
+    // el PD jalaba la torreta de regreso al objetivo viejo, y en giros rápidos se perdía el tag.
+    //
+    // Signos: el ángulo positivo de la torreta es hacia donde apunta un tx positivo (derecha),
+    // y el yaw del IMU de FTC es positivo hacia la izquierda. Si el chasis gira a la izquierda,
+    // la torreta tiene que girar a la derecha respecto al chasis. TURRET_YAW_SIGN = +1 es esa
+    // deducción. Si al girar el chasis la torreta se va del tag EN LA MISMA dirección del giro,
+    // el signo es el otro: se invierte en vivo con dpad ARRIBA del gamepad 2.
+    private double turretYawSign = 1.0;
+    private boolean lastDpadUp = false;
+
+    private double aimFieldBearingDeg = 0.0;  // hacia dónde está el objetivo, respecto al campo
+    private boolean bearingFromTag = false;   // true si el bearing viene de ver el tag
+    private double yawUnwrappedDeg = 0.0;     // yaw acumulado sin el salto de ±180°
+    private double lastYawRawDeg = 0.0;
+    private boolean yawInitialized = false;
+
+    // Compensación extra del giro del chasis (feedforward). Con el objetivo respecto al campo ya
+    // casi no hace falta, así que arranca en 0. Positivo = ayuda a contrarrestar el giro.
+    private double gyroFfGain = 0.0;
     private static final double GYRO_FF_STEP = 0.0005; // paso del ajuste en vivo (suma/resta)
 
     // ===== Apuntado en cascada (visión + encoder de la torreta) =====
@@ -116,7 +133,12 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private double aimTargetAngleDeg = 0.0;
     private boolean aimTargetValid = false;
     private double lastTx = 0.0; // último tx recibido, para el chequeo de signos en telemetría
-    private double lastStalenessForFrame = Double.MAX_VALUE;
+    // Hora (en el reloj de aimClock) a la que se tomó el último frame usado. Un frame es nuevo si
+    // se tomó después. Antes se detectaba "la antigüedad bajó", pero si el loop va más lento que
+    // la cámara se pueden leer dos frames seguidos con el segundo un poco más viejo al leerlo,
+    // y ese frame nuevo se perdía.
+    private double lastFrameCaptureMs = -1.0;
+    private static final double NEW_FRAME_MIN_GAP_MS = 2.0;
     private double turretRateDegPerSec = 0.0;      // filtrada, la que usa el control
     private double rawTurretRateDegPerSec = 0.0;   // sin filtrar, solo para ver el ruido
     private static final double TURRET_RATE_FILTER = 0.20;
@@ -142,6 +164,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // ángulo. Sumarlo al ángulo actual deja el objetivo corrido y hace que se pase.
     private static final int ANGLE_HISTORY_SIZE = 128;
     private final double[] angleHistoryDeg = new double[ANGLE_HISTORY_SIZE];
+    private final double[] yawHistoryDeg = new double[ANGLE_HISTORY_SIZE];
     private final double[] angleHistoryMs = new double[ANGLE_HISTORY_SIZE];
     private int angleHistoryCount = 0;
     private int angleHistoryIndex = 0;
@@ -306,9 +329,32 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             double yaw = orientationData.getYaw(AngleUnit.DEGREES);
             limelight.updateRobotOrientation(yaw);
 
+            // Yaw acumulado: el IMU brinca de +180 a -180, y ese brinco metido en el objetivo
+            // respecto al campo sería un error de 360° de golpe. Se va sumando el cambio de
+            // cada vuelta, normalizado, para tener un ángulo continuo.
+            if (!yawInitialized) {
+                lastYawRawDeg = yaw;
+                yawInitialized = true;
+            }
+            yawUnwrappedDeg += AngleUnit.normalizeDegrees(yaw - lastYawRawDeg);
+            lastYawRawDeg = yaw;
+
             AngularVelocity angularVelocity = imu.getRobotAngularVelocity(AngleUnit.DEGREES);
             double chassisYawRate = angularVelocity.zRotationRate;
-            double gyroFeedForward = -chassisYawRate * gyroFfGain;
+
+            // dpad arriba (gamepad 2): invierte el signo de la compensación del giro. Se ajusta
+            // el rumbo guardado para que el objetivo no brinque en el momento del cambio.
+            boolean curDpadUp = gamepad2.dpad_up;
+            if (curDpadUp && !lastDpadUp) {
+                aimFieldBearingDeg += 2.0 * turretYawSign * yawUnwrappedDeg;
+                turretYawSign = -turretYawSign;
+            }
+            lastDpadUp = curDpadUp;
+
+            // Velocidad a la que debe girar la torreta respecto al chasis para contrarrestar el
+            // giro del chasis (dato del IMU, limpio y al ritmo del loop).
+            double counterRate = turretYawSign * chassisYawRate;
+            double gyroFeedForward = counterRate * gyroFfGain;
 
             // Auto-aim siempre activo; mover el stick derecho del gamepad 2 toma control manual mientras se mueve
             boolean manualOverride = Math.abs(gamepad2.right_stick_x) > MANUAL_OVERRIDE_DEADZONE;
@@ -329,9 +375,16 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             // estaba la torreta cuando la cámara tomó la foto que llegue más adelante.
             angleHistoryMs[angleHistoryIndex] = aimClock.milliseconds();
             angleHistoryDeg[angleHistoryIndex] = turretAngleDeg;
+            yawHistoryDeg[angleHistoryIndex] = yawUnwrappedDeg;
             angleHistoryIndex = (angleHistoryIndex + 1) % ANGLE_HISTORY_SIZE;
             if (angleHistoryCount < ANGLE_HISTORY_SIZE) {
                 angleHistoryCount++;
+            }
+
+            // Primera vuelta: el rumbo a sostener es hacia donde apunta la torreta ahora mismo.
+            if (!aimTargetValid) {
+                holdCurrentPointing(turretAngleDeg);
+                aimTargetValid = true;
             }
 
             // Desenredado de cables (con histéresis)
@@ -345,10 +398,15 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 if (Math.abs(turretAngleDeg) > CENTER_TOLERANCE_DEG) {
                     desiredTurretPower = clamp(-turretAngleDeg * CENTER_KP, CENTER_MAX_POWER);
                 }
+                // Al soltar, que sostenga donde quedó (no que regrese al rumbo de antes).
+                holdCurrentPointing(turretAngleDeg);
             }
             else if (unwinding && !manualOverride) {
                 // Ignora el auto-aim y regresa la torreta hacia el centro (0°)
                 desiredTurretPower = clamp(-turretAngleDeg * UNWIND_KP, UNWIND_MAX_POWER);
+                // Si no, al terminar de desenredar volvería al rumbo viejo, que puede estar más
+                // allá del límite, y desenredaría otra vez en un ciclo sin fin.
+                holdCurrentPointing(turretAngleDeg);
             }
             else if (!manualOverride) {
                 LLResult result = limelight.getLatestResult();
@@ -378,19 +436,22 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     double tx = result.getTx();
                     lastTx = tx;
 
-                    // Frame nuevo (la antigüedad del dato bajó de golpe): la visión fija el
-                    // ángulo objetivo. Se parte del ángulo que tenía la torreta CUANDO se tomó
-                    // la foto, no del de ahora, porque en ese rato la torreta ya se movió.
-                    if (lastLLStaleness < lastStalenessForFrame) {
-                        double angleAtCapture = turretAngleAtMsAgo(lastLLStaleness, turretAngleDeg);
-                        double newTarget = angleAtCapture + tx;
+                    // Frame nuevo (la antigüedad del dato bajó de golpe): la visión fija el rumbo
+                    // del objetivo respecto al campo. Se usan el ángulo de la torreta Y el yaw del
+                    // chasis que había CUANDO se tomó la foto, porque en ese rato ya se movieron.
+                    double frameCaptureMs = aimClock.milliseconds() - lastLLStaleness;
+                    if (frameCaptureMs > lastFrameCaptureMs + NEW_FRAME_MIN_GAP_MS) {
+                        lastFrameCaptureMs = frameCaptureMs;
+                        int idx = historyIndexAtMsAgo(lastLLStaleness);
+                        double angleAtCapture = idx >= 0 ? angleHistoryDeg[idx] : turretAngleDeg;
+                        double yawAtCapture = idx >= 0 ? yawHistoryDeg[idx] : yawUnwrappedDeg;
+                        double newBearing = angleAtCapture + tx - turretYawSign * yawAtCapture;
 
-                        // Qué tan rápido se está moviendo el objetivo, comparando contra el frame
-                        // anterior. El límite de 0.5 s evita calcular una velocidad absurda cuando
-                        // se reengancha el tag después de haberlo perdido un rato.
+                        // Qué tan rápido se mueve el objetivo respecto al campo (al trasladarse el
+                        // robot). Solo entre dos frames con tag, y no a través de un hueco largo.
                         double dtFrame = aimFrameTimer.seconds();
-                        if (aimTargetValid && dtFrame > 0.001 && dtFrame < 0.5) {
-                            double rawRate = (newTarget - aimTargetAngleDeg) / dtFrame;
+                        if (bearingFromTag && dtFrame > 0.001 && dtFrame < 0.5) {
+                            double rawRate = (newBearing - aimFieldBearingDeg) / dtFrame;
                             aimTargetRateDegPerSec +=
                                     AIM_RATE_FILTER * (rawRate - aimTargetRateDegPerSec);
                             aimTargetRateDegPerSec = clamp(
@@ -400,18 +461,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         }
                         aimFrameTimer.reset();
 
-                        aimTargetAngleDeg = newTarget;
-                        aimTargetValid = true;
-                    }
-                    lastStalenessForFrame = lastLLStaleness;
-
-                    desiredTurretPower = aimPower(aimTargetAngleDeg, turretAngleDeg, gyroFeedForward);
-
-                    // Límite suave: no seguir el objetivo más allá de AUTO_AIM_LIMIT_DEG
-                    if ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && desiredTurretPower > 0)
-                            || (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG && desiredTurretPower < 0)) {
-                        desiredTurretPower = 0.0;
-                        targetOutOfRange = true;
+                        aimFieldBearingDeg = newBearing;
+                        bearingFromTag = true;
                     }
                 } else {
                     // Sin tag más allá de la memoria corta: rota al siguiente pipeline
@@ -421,42 +472,41 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         limelight.pipelineSwitch(currentPipeline);
                         pipelineTimer.reset();
                     }
-                    if (tagLostTimer.seconds() < TAG_MEMORY_TIMEOUT) {
-                        // Parpadeo corto del tag: sigue persiguiendo el último ángulo conocido
-                        // en vez de frenarse, así termina el movimiento que traía.
-                        desiredTurretPower = aimTargetValid
-                                ? aimPower(aimTargetAngleDeg, turretAngleDeg, gyroFeedForward)
-                                : gyroFeedForward;
-                        if ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && desiredTurretPower > 0)
-                                || (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG && desiredTurretPower < 0)) {
-                            desiredTurretPower = 0.0;
-                            targetOutOfRange = true;
-                        }
-                    } else {
-                        aimTargetValid = false; // el objetivo viejo ya no sirve
-                        aimTargetRateDegPerSec = 0.0;
+                    if (tagLostTimer.seconds() >= TAG_MEMORY_TIMEOUT) {
+                        aimTargetRateDegPerSec = 0.0; // la estimación de movimiento ya es vieja
+                    }
+                }
 
-                        // Sin tag, la torreta NO se mueve sola: solo compensa el giro del chasis
-                        // para no perder hacia dónde apunta. El barrido de búsqueda es a propósito,
-                        // manteniendo B (gamepad 2), para encontrar el tag de la cara de atrás del
-                        // gol. Antes barría sola al no ver nada, y al arrancar el match se iba
-                        // girando a la derecha sin que nadie se lo pidiera.
-                        if (gamepad2.b) {
-                            if (turretAngleDeg >= AUTO_AIM_LIMIT_DEG) {
-                                sweepDirectionRight = false;
-                            } else if (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG) {
-                                sweepDirectionRight = true;
-                            }
-                            desiredTurretPower =
-                                    (sweepDirectionRight ? SWEEP_POWER : -SWEEP_POWER) + gyroFeedForward;
-                        } else {
-                            desiredTurretPower = gyroFeedForward;
-                        }
+                if (!tagVisible && gamepad2.b) {
+                    // Búsqueda a propósito (B mantenido), para el tag de la cara de atrás del gol.
+                    if (turretAngleDeg >= AUTO_AIM_LIMIT_DEG) {
+                        sweepDirectionRight = false;
+                    } else if (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG) {
+                        sweepDirectionRight = true;
+                    }
+                    desiredTurretPower = sweepDirectionRight ? SWEEP_POWER : -SWEEP_POWER;
+                    holdCurrentPointing(turretAngleDeg); // al soltar B, sostiene donde quedó
+                } else {
+                    // Con o sin tag a la vista, la torreta persigue el rumbo guardado, traducido a
+                    // ángulo de torreta con el yaw de ESTA vuelta. Así, aunque el tag se pierda en
+                    // un giro rápido, la torreta sigue apuntando hacia donde estaba el gol y lo
+                    // vuelve a encontrar en cuanto regresa a la cámara.
+                    aimTargetAngleDeg = aimFieldBearingDeg + turretYawSign * yawUnwrappedDeg;
+                    desiredTurretPower = aimPower(aimTargetAngleDeg, turretAngleDeg,
+                            counterRate, gyroFeedForward);
+
+                    // Límite suave: no seguir el objetivo más allá de AUTO_AIM_LIMIT_DEG
+                    if ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && desiredTurretPower > 0)
+                            || (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG && desiredTurretPower < 0)) {
+                        desiredTurretPower = 0.0;
+                        targetOutOfRange = true;
                     }
                 }
             }
             else {
                 desiredTurretPower = gamepad2.right_stick_x * MANUAL_TURRET_POWER_SCALE;
+                // Al soltar el stick, sostiene donde la dejaste (hasta el siguiente frame con tag).
+                holdCurrentPointing(turretAngleDeg);
             }
 
             desiredTurretPower = applyTurretLimits(turretPositionTicks, desiredTurretPower);
@@ -623,6 +673,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             if (gamepad1.y) {
                 imu.resetYaw();
                 startHeading = 0.0;
+                // El yaw crudo pasa a 0 en la siguiente lectura; sin esto el yaw acumulado de la
+                // torreta vería ese salto como si el chasis hubiera girado de golpe.
+                lastYawRawDeg = 0.0;
             }
             double hRad = Math.toRadians(yaw + startHeading);
             double fieldFwd = -gamepad1.left_stick_y * driveScale;  // adelante del campo
@@ -668,7 +721,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 else if (targetOutOfRange) modo = "FUERA DE RANGO - GIRA EL CHASIS";
                 else if (tagLostTimer.seconds() <= TAG_MEMORY_TIMEOUT) modo = "AUTO (Locked)";
                 else if (gamepad2.b) modo = "BUSCANDO (B)";
-                else modo = "SIN TAG - quieta (B para buscar)";
+                else modo = bearingFromTag
+                        ? "SIN TAG - apunta al último rumbo del gol (B busca)"
+                        : "SIN TAG - sostiene dirección (B busca)";
                 telemetry.addData("Modo Torreta", modo);
                 telemetry.addData("Pipeline Limelight", currentPipeline);
                 telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
@@ -680,11 +735,14 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 // "frenado" es grande, ese ruido es lo que está tapando la corrección.
                 telemetry.addData("Vel. torreta cruda / filtrada", "%.0f / %.0f °/s",
                         rawTurretRateDegPerSec, turretRateDegPerSec);
-                telemetry.addData("Frenado que mete (vel x Aim kD)", "%.3f pot.",
-                        -turretRateDegPerSec * aimKd);
+                telemetry.addData("Término de velocidad (x Aim kD)", "%.3f pot.",
+                        (counterRate - turretRateDegPerSec) * aimKd);
                 telemetry.addData("Vel. objetivo", "%.0f °/s", aimTargetRateDegPerSec);
-                telemetry.addData("Giro chasis / compensación", "%.0f °/s -> %.2f pot.",
-                        chassisYawRate, gyroFeedForward);
+                // Girando el chasis, la torreta debería ir a "debe ir" para quedarse en el tag.
+                telemetry.addData("Giro chasis / torreta debe ir", "%.0f / %.0f °/s",
+                        chassisYawRate, counterRate);
+                telemetry.addData("Signo compensación (dpad arriba invierte)", "%+.0f",
+                        turretYawSign);
                 // CHEQUEO DE SIGNOS: con el robot quieto y el tag a la vista, mueve la torreta a
                 // mano (stick derecho del gamepad 2). Este número debe QUEDARSE QUIETO, porque es
                 // el ángulo absoluto hacia el tag y el tag no se movió.
@@ -718,18 +776,20 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
      * El término derivativo usa la velocidad real medida por el encoder (no la derivada de tx),
      * así frena al ritmo del loop y no al de la cámara.
      */
-    private double aimPower(double targetAngleDeg, double currentAngleDeg, double gyroFeedForward) {
+    private double aimPower(double targetAngleDeg, double currentAngleDeg,
+                            double counterRate, double gyroFeedForward) {
         double angleError = targetAngleDeg - currentAngleDeg;
-        if (Math.abs(angleError) <= DEADZONE_TX) {
-            return gyroFeedForward;
-        }
+        // La zona muerta solo apaga el término proporcional: el de velocidad sigue activo para
+        // que, aun "centrada", la torreta acompañe el giro del chasis sin esperar a acumular error.
+        boolean inDeadzone = Math.abs(angleError) <= DEADZONE_TX;
+        double proportional = inDeadzone ? 0.0 : angleError * aimKp;
 
-        // Frenado con la velocidad real de la torreta, más (opcional) acompañar la velocidad del
-        // objetivo. Ese segundo término va con su PROPIA ganancia y arranca en 0: la velocidad
-        // del objetivo se estima entre frames de cámara y es ruidosa, así que acoplada al frenado
-        // sacudía la torreta al moverse el robot. En 0 el comportamiento es puro PD.
-        double power = (angleError * aimKp)
-                - (turretRateDegPerSec * aimKd)
+        // Frenado sobre la velocidad RELATIVA a la que debería ir para contrarrestar el giro del
+        // chasis (dato del IMU, limpio). Con el chasis quieto es el mismo frenado de antes; con el
+        // chasis girando, la torreta no es frenada por compensarlo, solo por desviarse de eso.
+        // El término de velocidad del objetivo (aimRateFf) va aparte y arranca en 0.
+        double power = proportional
+                + (counterRate - turretRateDegPerSec) * aimKd
                 + (aimTargetRateDegPerSec * aimRateFf)
                 + gyroFeedForward;
         power = clamp(power, MAX_TURRET_POWER);
@@ -737,28 +797,36 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         // La potencia mínima solo cuando la torreta está prácticamente detenida: es para romper
         // la fricción de arranque. Si se aplicara también en movimiento taparía el frenado del
         // término derivativo y volvería a pasarse del objetivo.
-        if (Math.abs(power) < minTurretPower && Math.abs(turretRateDegPerSec) < STATIC_RATE_DEG_PER_SEC) {
+        if (!inDeadzone && Math.abs(power) < minTurretPower
+                && Math.abs(turretRateDegPerSec) < STATIC_RATE_DEG_PER_SEC) {
             power = (angleError > 0) ? minTurretPower : -minTurretPower;
         }
         return power;
     }
 
-    /** Ángulo que tenía la torreta hace msAgo milisegundos, del historial. */
-    private double turretAngleAtMsAgo(double msAgo, double fallbackAngleDeg) {
+    /** Posición en el historial más cercana a hace msAgo milisegundos, o -1 si está vacío. */
+    private int historyIndexAtMsAgo(double msAgo) {
         if (angleHistoryCount == 0) {
-            return fallbackAngleDeg;
+            return -1;
         }
         double targetMs = aimClock.milliseconds() - Math.max(0.0, msAgo);
-        double bestAngle = fallbackAngleDeg;
+        int best = -1;
         double bestDiff = Double.MAX_VALUE;
         for (int i = 0; i < angleHistoryCount; i++) {
             double diff = Math.abs(angleHistoryMs[i] - targetMs);
             if (diff < bestDiff) {
                 bestDiff = diff;
-                bestAngle = angleHistoryDeg[i];
+                best = i;
             }
         }
-        return bestAngle;
+        return best;
+    }
+
+    /** Toma como rumbo a sostener hacia donde apunta la torreta ahora mismo. */
+    private void holdCurrentPointing(double turretAngleDeg) {
+        aimFieldBearingDeg = turretAngleDeg - turretYawSign * yawUnwrappedDeg;
+        bearingFromTag = false;
+        aimTargetRateDegPerSec = 0.0;
     }
 
     private double getTunableValue(int index) {
