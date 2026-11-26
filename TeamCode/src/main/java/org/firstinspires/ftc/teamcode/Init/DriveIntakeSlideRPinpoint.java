@@ -57,6 +57,12 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
     private static final double MAX_TURRET_POWER = 0.75;
+    // Cuánto puede cambiar la potencia de la torreta por segundo (de 0 a tope en ~0.25 s).
+    // Suaviza el arranque de cada corrección. Si se baja mucho, el control se siente blandito
+    // y puede llegar a oscilar, porque la rampa le mete retraso al lazo.
+    private static final double TURRET_SLEW_PER_SEC = 4.0;
+    private double lastTurretPower = 0.0;
+    private final ElapsedTime turretSlewTimer = new ElapsedTime();
     // Potencia mínima para vencer la fricción (engranes cónicos + reducción 5:1). Ajustable en vivo:
     // si la torreta pega un jalón seco al empezar a corregir, bájala.
     private double minTurretPower = 0.045;
@@ -100,7 +106,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // La relación aimKp/aimKd marca a qué velocidad intenta acercarse al objetivo: con estos
     // valores pide unos 2.5 °/s por cada grado de error, una velocidad desde la que sí alcanza
     // a frenar. Antes pedía 27 °/s por grado y por eso llegaba pegando y se pasaba de largo.
-    private double aimKp = 0.035;  // potencia por grado de error de ángulo
+    private double aimKp = 0.024;  // potencia por grado de error de ángulo
     private double aimKd = 0.008;  // frenado por cada grado/segundo que gira la torreta
     // Acompañar la velocidad del objetivo. ARRANCA EN 0 (apagado): sirve para no quedarse atrás
     // de un blanco en movimiento, pero la estimación viene de la cámara y mete ruido, así que
@@ -286,6 +292,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         tagLostTimer.reset();
         pipelineTimer.reset();
         telemetryTimer.reset();
+        turretSlewTimer.reset();
         lastRPM = getRPM();
 
         while (opModeIsActive()) {
@@ -445,6 +452,19 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             }
 
             desiredTurretPower = applyTurretLimits(turretPositionTicks, desiredTurretPower);
+
+            // Rampa de potencia: limita qué tan rápido puede CAMBIAR la potencia, no su valor.
+            // Un proporcional aplica toda la corrección de golpe en cuanto aparece el error, y
+            // eso es lo que se siente como un jalón seco. Así sube en rampa y llega igual de
+            // lejos, solo que sin el golpe.
+            double slewStep = TURRET_SLEW_PER_SEC * turretSlewTimer.seconds();
+            turretSlewTimer.reset();
+            double powerDelta = desiredTurretPower - lastTurretPower;
+            if (Math.abs(powerDelta) > slewStep) {
+                desiredTurretPower = lastTurretPower + Math.signum(powerDelta) * slewStep;
+            }
+            lastTurretPower = desiredTurretPower;
+
             turret.setPower(desiredTurretPower);
 
             // =========================================================
