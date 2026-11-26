@@ -117,7 +117,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private boolean aimTargetValid = false;
     private double lastTx = 0.0; // último tx recibido, para el chequeo de signos en telemetría
     private double lastStalenessForFrame = Double.MAX_VALUE;
-    private double turretRateDegPerSec = 0.0;
+    private double turretRateDegPerSec = 0.0;      // filtrada, la que usa el control
+    private double rawTurretRateDegPerSec = 0.0;   // sin filtrar, solo para ver el ruido
+    private static final double TURRET_RATE_FILTER = 0.20;
 
     // Qué tan rápido se mueve el objetivo (el ángulo al que hay que apuntar cambia mientras el
     // robot avanza, aunque el chasis no gire). Sin esto, un control por posición siempre va
@@ -313,7 +315,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
             double turretPositionTicks = turret.getCurrentPosition();
             double turretAngleDeg = turretPositionTicks / TICKS_PER_DEGREE;
-            turretRateDegPerSec = turret.getVelocity() / TICKS_PER_DEGREE;
+            // Velocidad de la torreta, filtrada. Con 7.5 ticks por grado hay poca resolución, y
+            // la velocidad que calcula el hub a partir de eso brinca bastante a baja velocidad.
+            // Sin filtrar, ese ruido entra multiplicado por Aim kD y se vuelve potencia al azar
+            // que tapa la corrección.
+            rawTurretRateDegPerSec = turret.getVelocity() / TICKS_PER_DEGREE;
+            turretRateDegPerSec +=
+                    TURRET_RATE_FILTER * (rawTurretRateDegPerSec - turretRateDegPerSec);
             double desiredTurretPower = 0;
             boolean targetOutOfRange = false;
 
@@ -668,8 +676,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Aim objetivo / actual / error", "%.1f° / %.1f° / %.1f°",
                         aimTargetAngleDeg, turretAngleDeg,
                         aimTargetValid ? (aimTargetAngleDeg - turretAngleDeg) : 0.0);
-                telemetry.addData("Velocidad torreta / objetivo", "%.0f / %.0f °/s",
-                        turretRateDegPerSec, aimTargetRateDegPerSec);
+                // Si con la torreta QUIETA el valor "cruda" brinca mucho (decenas de °/s) y el
+                // "frenado" es grande, ese ruido es lo que está tapando la corrección.
+                telemetry.addData("Vel. torreta cruda / filtrada", "%.0f / %.0f °/s",
+                        rawTurretRateDegPerSec, turretRateDegPerSec);
+                telemetry.addData("Frenado que mete (vel x Aim kD)", "%.3f pot.",
+                        -turretRateDegPerSec * aimKd);
+                telemetry.addData("Vel. objetivo", "%.0f °/s", aimTargetRateDegPerSec);
                 telemetry.addData("Giro chasis / compensación", "%.0f °/s -> %.2f pot.",
                         chassisYawRate, gyroFeedForward);
                 // CHEQUEO DE SIGNOS: con el robot quieto y el tag a la vista, mueve la torreta a
