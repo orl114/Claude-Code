@@ -51,8 +51,12 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double TICKS_PER_DEGREE = (MOTOR_TICKS_PER_REV * GEAR_RATIO) / 360.0;
 
     // Tope mecánico real medido a mano: ~190° de cada lado.
-    private static final double MAX_TURRET_ANGLE_DEG = 165.0;
-    private static final double MIN_TURRET_ANGLE_DEG = -165.0;
+    // Orden obligatorio: AUTO_AIM_LIMIT_DEG < UNWIND_THRESHOLD_DEG < MAX_TURRET_ANGLE_DEG.
+    // El máximo corta la potencia; si el desenredado quedara por encima del máximo, la torreta
+    // nunca llegaría a él y jamás se activaría (eso pasaba con 165 / 175).
+    // Tope mecánico real: ~190°. El máximo deja 10° de margen.
+    private static final double MAX_TURRET_ANGLE_DEG = 180.0;
+    private static final double MIN_TURRET_ANGLE_DEG = -180.0;
     private static final double MAX_TURRET_TICKS = MAX_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
@@ -71,7 +75,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
 
     // Límite suave del auto-aim: si el objetivo queda más allá, la torreta se queda en el límite
     // (sin desenredar) y la telemetría pide girar el chasis. Evita el ciclo apuntar -> desenredar -> apuntar.
-    private static final double AUTO_AIM_LIMIT_DEG = 150.0;
+    private static final double AUTO_AIM_LIMIT_DEG = 165.0;
 
     // Desenredado de cables (seguridad): solo se activa si la torreta pasa del límite suave
     // (inercia o tras el control manual). Vuelve hacia el centro hasta quedar cerca de 0°.
@@ -491,7 +495,24 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     // ángulo de torreta con el yaw de ESTA vuelta. Así, aunque el tag se pierda en
                     // un giro rápido, la torreta sigue apuntando hacia donde estaba el gol y lo
                     // vuelve a encontrar en cuanto regresa a la cámara.
-                    aimTargetAngleDeg = aimFieldBearingDeg + turretYawSign * yawUnwrappedDeg;
+                    double rawTarget = aimFieldBearingDeg + turretYawSign * yawUnwrappedDeg;
+
+                    // Desenredado de verdad: un mismo rumbo se apunta igual con X que con X±360.
+                    // Si el robot giró mucho, el objetivo puede dar 250°, que la torreta no
+                    // alcanza por ese lado, pero es lo mismo que −110°, que sí alcanza dándose la
+                    // vuelta por el otro. Antes se quedaba pegada en el tope de su lado.
+                    // Como el rango del auto-aim (±165°) mide menos de 360°, cada rumbo tiene a lo
+                    // más UN equivalente alcanzable. Si cae en el hueco de atrás (entre 165° y
+                    // 180°), espera en el límite del lado donde ya está, sin cruzar todo: así no
+                    // va y viene de un lado a otro con el objetivo justo atrás.
+                    double wrapped = AngleUnit.normalizeDegrees(rawTarget);
+                    if (Math.abs(wrapped) <= AUTO_AIM_LIMIT_DEG) {
+                        aimTargetAngleDeg = wrapped;
+                    } else {
+                        aimTargetAngleDeg = turretAngleDeg >= 0 ? AUTO_AIM_LIMIT_DEG : -AUTO_AIM_LIMIT_DEG;
+                        targetOutOfRange = true;
+                    }
+
                     desiredTurretPower = aimPower(aimTargetAngleDeg, turretAngleDeg,
                             counterRate, gyroFeedForward);
 
@@ -718,46 +739,43 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 if (gamepad2.dpad_down) modo = "CENTRANDO";
                 else if (manualOverride) modo = "MANUAL";
                 else if (unwinding) modo = "DESENREDANDO";
-                else if (targetOutOfRange) modo = "FUERA DE RANGO - GIRA EL CHASIS";
+                else if (targetOutOfRange) modo = "GOL DETRÁS - espera en el límite";
                 else if (tagLostTimer.seconds() <= TAG_MEMORY_TIMEOUT) modo = "AUTO (Locked)";
                 else if (gamepad2.b) modo = "BUSCANDO (B)";
                 else modo = bearingFromTag
                         ? "SIN TAG - apunta al último rumbo del gol (B busca)"
                         : "SIN TAG - sostiene dirección (B busca)";
+
+                // ---- Lo importante, arriba (en el Driver Station caben pocas líneas) ----
                 telemetry.addData("Modo Torreta", modo);
-                telemetry.addData("Pipeline Limelight", currentPipeline);
-                telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
-                        lastLLResultIsNull, lastLLValid, lastLLTa, lastLLStaleness, lastLLFiducialCount);
-                telemetry.addData("Aim objetivo / actual / error", "%.1f° / %.1f° / %.1f°",
-                        aimTargetAngleDeg, turretAngleDeg,
-                        aimTargetValid ? (aimTargetAngleDeg - turretAngleDeg) : 0.0);
-                // Si con la torreta QUIETA el valor "cruda" brinca mucho (decenas de °/s) y el
-                // "frenado" es grande, ese ruido es lo que está tapando la corrección.
+                telemetry.addData("Torreta actual / objetivo", "%.0f° / %.0f°  (máx ±%.0f°)",
+                        turretAngleDeg, aimTargetAngleDeg, MAX_TURRET_ANGLE_DEG);
+                // Prueba del IMU: gira el robot a la IZQUIERDA y el yaw debe SUBIR.
+                // Si no cambia al girar el robot, el IMU no está midiendo el giro del chasis.
+                telemetry.addData("IMU yaw / giro", "%.0f° / %.0f °/s", yaw, chassisYawRate);
+                telemetry.addData("Signo compensación (dpad ARRIBA invierte)", "%+.0f", turretYawSign);
+                telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
+                telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
+                telemetry.addData("Ajuste en vivo (LB/RB elige, Y sube, A baja)",
+                        "%s = %.6f", TUNABLE_NAMES[tunableIndex], getTunableValue(tunableIndex));
+
+                // ---- Diagnóstico (más abajo) ----
+                telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
+                telemetry.addData("Giro chasis -> torreta debe ir", "%.0f °/s", counterRate);
                 telemetry.addData("Vel. torreta cruda / filtrada", "%.0f / %.0f °/s",
                         rawTurretRateDegPerSec, turretRateDegPerSec);
                 telemetry.addData("Término de velocidad (x Aim kD)", "%.3f pot.",
                         (counterRate - turretRateDegPerSec) * aimKd);
                 telemetry.addData("Vel. objetivo", "%.0f °/s", aimTargetRateDegPerSec);
-                // Girando el chasis, la torreta debería ir a "debe ir" para quedarse en el tag.
-                telemetry.addData("Giro chasis / torreta debe ir", "%.0f / %.0f °/s",
-                        chassisYawRate, counterRate);
-                telemetry.addData("Signo compensación (dpad arriba invierte)", "%+.0f",
-                        turretYawSign);
                 // CHEQUEO DE SIGNOS: con el robot quieto y el tag a la vista, mueve la torreta a
-                // mano (stick derecho del gamepad 2). Este número debe QUEDARSE QUIETO, porque es
-                // el ángulo absoluto hacia el tag y el tag no se movió.
-                // - Si se mueve igual que la torreta -> el signo de tx está al revés.
-                // - Si se mueve solo una parte -> la escala (GEAR_RATIO) no cuadra.
+                // mano (stick derecho del gamepad 2). Este número debe QUEDARSE QUIETO.
                 telemetry.addData("Chequeo ángulo+tx (debe ser fijo)", "%.1f°",
                         turretAngleDeg + lastTx);
-                telemetry.addData("Ángulo Torreta", "%.1f° (Max ±%.0f°)", turretAngleDeg, MAX_TURRET_ANGLE_DEG);
-                telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
-                telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
-                telemetry.addData("Shooter listo", recovering ? "RECUPERANDO..." : (rpmEnRango ? "SÍ (RPM OK)" : "ESPERANDO..."));
+                telemetry.addData("Pipeline Limelight", currentPipeline);
+                telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
+                        lastLLResultIsNull, lastLLValid, lastLLTa, lastLLStaleness, lastLLFiducialCount);
                 telemetry.addData("Shooter potencia / ticks/s / posición", "%.2f / %.0f / %d",
                         lastShooterPower, shooter.getVelocity(), shooter.getCurrentPosition());
-                telemetry.addData("Ajuste en vivo (LB/RB elige, Y sube, A baja)",
-                        "%s = %.6f", TUNABLE_NAMES[tunableIndex], getTunableValue(tunableIndex));
                 telemetry.update();
                 telemetryTimer.reset();
             }
