@@ -60,7 +60,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double MAX_TURRET_POWER = 0.75;
     // Potencia mínima para vencer la fricción (engranes cónicos + reducción 5:1). Ajustable en vivo:
     // si la torreta pega un jalón seco al empezar a corregir, bájala.
-    private double minTurretPower = 0.06;
+    private double minTurretPower = 0.045;
     private static final double MANUAL_TURRET_POWER_SCALE = 0.50;
     private static final double MANUAL_OVERRIDE_DEADZONE = 0.10;
 
@@ -81,7 +81,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double CENTER_MAX_POWER = 0.40;
     private static final double CENTER_TOLERANCE_DEG = 1.0;
 
-    private static final double DEADZONE_TX = 0.50; // error de apuntado que ya se considera "centrado"
+    // Error de apuntado que ya se considera "centrado". Si queda muy chico, la torreta no deja
+    // de corregir de un lado a otro buscando una precisión que la mecánica no da.
+    private static final double DEADZONE_TX = 1.50;
     private static final double GYRO_FF_KP = 0.003;
 
     // ===== Apuntado en cascada (visión + encoder de la torreta) =====
@@ -90,8 +92,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // un ÁNGULO OBJETIVO, y un PD sobre el encoder persigue ese ángulo en cada vuelta.
     // Así la torreta reacciona al ritmo del loop y se frena con la velocidad real del motor,
     // en vez de ir dando tumbos cada vez que llega un frame.
-    private double aimKp = 0.055;  // potencia por grado de error de ángulo
-    private double aimKd = 0.002;  // frenado por cada grado/segundo que gira la torreta
+    // La relación aimKp/aimKd marca a qué velocidad intenta acercarse al objetivo: con estos
+    // valores pide unos 2.5 °/s por cada grado de error, una velocidad desde la que sí alcanza
+    // a frenar. Antes pedía 27 °/s por grado y por eso llegaba pegando y se pasaba de largo.
+    private double aimKp = 0.020;  // potencia por grado de error de ángulo
+    private double aimKd = 0.008;  // frenado por cada grado/segundo que gira la torreta
 
     private double aimTargetAngleDeg = 0.0;
     private boolean aimTargetValid = false;
