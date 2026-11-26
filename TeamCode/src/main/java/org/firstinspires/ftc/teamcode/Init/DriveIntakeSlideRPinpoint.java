@@ -94,13 +94,21 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // La relación aimKp/aimKd marca a qué velocidad intenta acercarse al objetivo: con estos
     // valores pide unos 2.5 °/s por cada grado de error, una velocidad desde la que sí alcanza
     // a frenar. Antes pedía 27 °/s por grado y por eso llegaba pegando y se pasaba de largo.
-    private double aimKp = 0.020;  // potencia por grado de error de ángulo
-    private double aimKd = 0.008;  // frenado por cada grado/segundo que gira la torreta
+    private double aimKp = 0.035;  // potencia por grado de error de ángulo
+    private double aimKd = 0.008;  // potencia por cada grado/segundo de diferencia de velocidad
 
     private double aimTargetAngleDeg = 0.0;
     private boolean aimTargetValid = false;
     private double lastStalenessForFrame = Double.MAX_VALUE;
     private double turretRateDegPerSec = 0.0;
+
+    // Qué tan rápido se mueve el objetivo (el ángulo al que hay que apuntar cambia mientras el
+    // robot avanza, aunque el chasis no gire). Sin esto, un control por posición siempre va
+    // atrás del blanco: corrige, el blanco ya se movió, vuelve a corregir. Con esto la torreta
+    // acompaña el movimiento y el error que le queda por cerrar es mucho más chico.
+    private double aimTargetRateDegPerSec = 0.0;
+    private static final double AIM_RATE_FILTER = 0.35; // suaviza el ruido entre frames
+    private final ElapsedTime aimFrameTimer = new ElapsedTime();
 
     // Abajo de esta velocidad se considera que la torreta está detenida, y ahí sí se aplica la
     // potencia mínima para vencer la fricción. Yendo en movimiento no se aplica, porque taparía
@@ -341,7 +349,22 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     // la foto, no del de ahora, porque en ese rato la torreta ya se movió.
                     if (lastLLStaleness < lastStalenessForFrame) {
                         double angleAtCapture = turretAngleAtMsAgo(lastLLStaleness, turretAngleDeg);
-                        aimTargetAngleDeg = angleAtCapture + tx;
+                        double newTarget = angleAtCapture + tx;
+
+                        // Qué tan rápido se está moviendo el objetivo, comparando contra el frame
+                        // anterior. El límite de 0.5 s evita calcular una velocidad absurda cuando
+                        // se reengancha el tag después de haberlo perdido un rato.
+                        double dtFrame = aimFrameTimer.seconds();
+                        if (aimTargetValid && dtFrame > 0.001 && dtFrame < 0.5) {
+                            double rawRate = (newTarget - aimTargetAngleDeg) / dtFrame;
+                            aimTargetRateDegPerSec +=
+                                    AIM_RATE_FILTER * (rawRate - aimTargetRateDegPerSec);
+                        } else {
+                            aimTargetRateDegPerSec = 0.0;
+                        }
+                        aimFrameTimer.reset();
+
+                        aimTargetAngleDeg = newTarget;
                         aimTargetValid = true;
                     }
                     lastStalenessForFrame = lastLLStaleness;
@@ -375,6 +398,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         }
                     } else {
                         aimTargetValid = false; // el objetivo viejo ya no sirve
+                        aimTargetRateDegPerSec = 0.0;
 
                         // Sin tag, la torreta NO se mueve sola: solo compensa el giro del chasis
                         // para no perder hacia dónde apunta. El barrido de búsqueda es a propósito,
@@ -599,7 +623,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 telemetry.addData("Aim objetivo / actual / error", "%.1f° / %.1f° / %.1f°",
                         aimTargetAngleDeg, turretAngleDeg,
                         aimTargetValid ? (aimTargetAngleDeg - turretAngleDeg) : 0.0);
-                telemetry.addData("Velocidad torreta", "%.0f °/s", turretRateDegPerSec);
+                telemetry.addData("Velocidad torreta / objetivo", "%.0f / %.0f °/s",
+                        turretRateDegPerSec, aimTargetRateDegPerSec);
                 telemetry.addData("Ángulo Torreta", "%.1f° (Max ±%.0f°)", turretAngleDeg, MAX_TURRET_ANGLE_DEG);
                 telemetry.addData("Shooter Target / Actual", "%.0f / %.0f RPM", targetRPM, currentRPM);
                 telemetry.addData("Objetivo efectivo", "%.0f RPM%s", effTarget, burstActive ? " (BOOST ráfaga)" : "");
@@ -632,7 +657,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             return gyroFeedForward;
         }
 
-        double power = (angleError * aimKp) - (turretRateDegPerSec * aimKd) + gyroFeedForward;
+        // El frenado va sobre la velocidad RELATIVA: si el objetivo se mueve, la torreta no es
+        // frenada por acompañarlo, solo por ir más rápido o más lento que él. Con el objetivo
+        // quieto es exactamente el frenado de antes.
+        double rateError = aimTargetRateDegPerSec - turretRateDegPerSec;
+        double power = (angleError * aimKp) + (rateError * aimKd) + gyroFeedForward;
         power = clamp(power, MAX_TURRET_POWER);
 
         // La potencia mínima solo cuando la torreta está prácticamente detenida: es para romper
