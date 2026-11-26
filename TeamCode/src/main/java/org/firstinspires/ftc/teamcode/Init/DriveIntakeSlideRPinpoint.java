@@ -370,15 +370,24 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                             targetOutOfRange = true;
                         }
                     } else {
-                        aimTargetValid = false; // el objetivo viejo ya no sirve, toca buscar
-                        // Barre casi hasta el límite físico, para encontrar el tag de la cara
-                        // de atrás del gol cuando el de enfrente queda oculto.
-                        if (turretAngleDeg >= AUTO_AIM_LIMIT_DEG) {
-                            sweepDirectionRight = false;
-                        } else if (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG) {
-                            sweepDirectionRight = true;
+                        aimTargetValid = false; // el objetivo viejo ya no sirve
+
+                        // Sin tag, la torreta NO se mueve sola: solo compensa el giro del chasis
+                        // para no perder hacia dónde apunta. El barrido de búsqueda es a propósito,
+                        // manteniendo B (gamepad 2), para encontrar el tag de la cara de atrás del
+                        // gol. Antes barría sola al no ver nada, y al arrancar el match se iba
+                        // girando a la derecha sin que nadie se lo pidiera.
+                        if (gamepad2.b) {
+                            if (turretAngleDeg >= AUTO_AIM_LIMIT_DEG) {
+                                sweepDirectionRight = false;
+                            } else if (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG) {
+                                sweepDirectionRight = true;
+                            }
+                            desiredTurretPower =
+                                    (sweepDirectionRight ? SWEEP_POWER : -SWEEP_POWER) + gyroFeedForward;
+                        } else {
+                            desiredTurretPower = gyroFeedForward;
                         }
-                        desiredTurretPower = (sweepDirectionRight ? SWEEP_POWER : -SWEEP_POWER) + gyroFeedForward;
                     }
                 }
             }
@@ -576,7 +585,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 else if (manualOverride) modo = "MANUAL";
                 else if (unwinding) modo = "DESENREDANDO";
                 else if (targetOutOfRange) modo = "FUERA DE RANGO - GIRA EL CHASIS";
-                else modo = tagLostTimer.seconds() > TAG_MEMORY_TIMEOUT ? "BUSCANDO (Escaneo)" : "AUTO (Locked)";
+                else if (tagLostTimer.seconds() <= TAG_MEMORY_TIMEOUT) modo = "AUTO (Locked)";
+                else if (gamepad2.b) modo = "BUSCANDO (B)";
+                else modo = "SIN TAG - quieta (B para buscar)";
                 telemetry.addData("Modo Torreta", modo);
                 telemetry.addData("Pipeline Limelight", currentPipeline);
                 telemetry.addData("LL diagnóstico", "null=%b válido=%b ta=%.3f staleness=%.0fms tags=%d",
