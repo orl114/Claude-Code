@@ -60,7 +60,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private static final double MAX_TURRET_TICKS = MAX_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
     private static final double MIN_TURRET_TICKS = MIN_TURRET_ANGLE_DEG * TICKS_PER_DEGREE;
 
-    private static final double MAX_TURRET_POWER = 0.75;
+    // Tope de potencia del apuntado. Con 0.75 la torreta solo podía girar a ~280 °/s, menos de lo
+    // que gira el chasis en un giro brusco, así que el tag se salía de la cámara sí o sí.
+    private static final double MAX_TURRET_POWER = 1.0;
     // Cuánto puede cambiar la potencia de la torreta por segundo (de 0 a tope en ~0.25 s).
     // Suaviza el arranque de cada corrección. Si se baja mucho, el control se siente blandito
     // y puede llegar a oscilar, porque la rampa le mete retraso al lazo.
@@ -113,9 +115,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     private double lastYawRawDeg = 0.0;
     private boolean yawInitialized = false;
 
-    // Compensación extra del giro del chasis (feedforward). Con el objetivo respecto al campo ya
-    // casi no hace falta, así que arranca en 0. Positivo = ayuda a contrarrestar el giro.
-    private double gyroFfGain = 0.0;
+    // Compensación directa del giro del chasis (feedforward): potencia por cada °/s de giro, para
+    // que la torreta contrarreste el giro AL MISMO TIEMPO que el chasis gira, sin esperar a que
+    // se acumule error. 0.003 ≈ 1 / (velocidad máxima de la torreta, ~340 °/s con este motor y
+    // la reducción 5:1). Va FUERA de la rampa de potencia: con rampa llegaba tarde.
+    private double gyroFfGain = 0.003;
     private static final double GYRO_FF_STEP = 0.0005; // paso del ajuste en vivo (suma/resta)
 
     // ===== Apuntado en cascada (visión + encoder de la torreta) =====
@@ -248,6 +252,10 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // Configura los pipelines 0, 1 y 2 en la interfaz web de la Limelight.
     private static final int PIPELINE_COUNT = 3;
     private static final double PIPELINE_SWITCH_SECONDS = 1.0; // tiempo en cada pipeline antes de pasar al siguiente
+    // Sin tag por este tiempo, empieza a rotar pipelines. Antes era a los 0.3 s: en un movimiento
+    // brusco el tag se perdía un instante, la cámara se cambiaba a un pipeline que no busca
+    // AprilTags y quedaba ciega hasta 2 s aunque la torreta ya estuviera apuntando bien.
+    private static final double PIPELINE_SEARCH_AFTER_S = 3.0;
     private ElapsedTime pipelineTimer = new ElapsedTime();
     private int currentPipeline = 0;
     private boolean sweepDirectionRight = true;
@@ -372,7 +380,9 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             rawTurretRateDegPerSec = turret.getVelocity() / TICKS_PER_DEGREE;
             turretRateDegPerSec +=
                     TURRET_RATE_FILTER * (rawTurretRateDegPerSec - turretRateDegPerSec);
-            double desiredTurretPower = 0;
+            double desiredTurretPower = 0;    // corrección (pasa por la rampa)
+            double turretFeedForward = 0.0;   // compensación directa del giro (sin rampa)
+            boolean aimActive = false;        // true si esta vuelta la torreta está apuntando
             boolean targetOutOfRange = false;
 
             // Guarda el ángulo de este instante, para poder consultar después en qué ángulo
@@ -470,7 +480,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                     }
                 } else {
                     // Sin tag más allá de la memoria corta: rota al siguiente pipeline
-                    if (tagLostTimer.seconds() >= TAG_MEMORY_TIMEOUT
+                    if (tagLostTimer.seconds() >= PIPELINE_SEARCH_AFTER_S
                             && pipelineTimer.seconds() > PIPELINE_SWITCH_SECONDS) {
                         currentPipeline = (currentPipeline + 1) % PIPELINE_COUNT;
                         limelight.pipelineSwitch(currentPipeline);
@@ -513,15 +523,10 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         targetOutOfRange = true;
                     }
 
-                    desiredTurretPower = aimPower(aimTargetAngleDeg, turretAngleDeg,
-                            counterRate, gyroFeedForward);
-
-                    // Límite suave: no seguir el objetivo más allá de AUTO_AIM_LIMIT_DEG
-                    if ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && desiredTurretPower > 0)
-                            || (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG && desiredTurretPower < 0)) {
-                        desiredTurretPower = 0.0;
-                        targetOutOfRange = true;
-                    }
+                    desiredTurretPower = aimPower(aimTargetAngleDeg, turretAngleDeg, counterRate);
+                    // La compensación directa del giro se suma después de la rampa (abajo).
+                    turretFeedForward = gyroFeedForward;
+                    aimActive = true;
                 }
             }
             else {
@@ -530,12 +535,10 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 holdCurrentPointing(turretAngleDeg);
             }
 
-            desiredTurretPower = applyTurretLimits(turretPositionTicks, desiredTurretPower);
-
-            // Rampa de potencia: limita qué tan rápido puede CAMBIAR la potencia, no su valor.
-            // Un proporcional aplica toda la corrección de golpe en cuanto aparece el error, y
-            // eso es lo que se siente como un jalón seco. Así sube en rampa y llega igual de
-            // lejos, solo que sin el golpe.
+            // Rampa de potencia, SOLO sobre la corrección: limita qué tan rápido puede cambiar,
+            // para que no dé el jalón seco de un proporcional. La compensación del giro del
+            // chasis NO pasa por la rampa: tiene que salir al instante o la torreta llega tarde
+            // a cada giro ("primero se mueve y luego corrige").
             double slewStep = TURRET_SLEW_PER_SEC * turretSlewTimer.seconds();
             turretSlewTimer.reset();
             double powerDelta = desiredTurretPower - lastTurretPower;
@@ -544,7 +547,24 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             }
             lastTurretPower = desiredTurretPower;
 
-            turret.setPower(desiredTurretPower);
+            double turretPower = clamp(desiredTurretPower + turretFeedForward, MAX_TURRET_POWER);
+
+            // Límite suave del apuntado, sobre la potencia total.
+            if (aimActive && ((turretAngleDeg >= AUTO_AIM_LIMIT_DEG && turretPower > 0)
+                    || (turretAngleDeg <= -AUTO_AIM_LIMIT_DEG && turretPower < 0))) {
+                turretPower = 0.0;
+                lastTurretPower = 0.0;
+                targetOutOfRange = true;
+            }
+
+            double limitedPower = applyTurretLimits(turretPositionTicks, turretPower);
+            if (limitedPower == 0.0 && turretPower != 0.0) {
+                // Se cortó por un límite: que la rampa arranque de 0 al salir de ahí, en vez de
+                // acumular una corrección que no se está aplicando.
+                lastTurretPower = 0.0;
+            }
+
+            turret.setPower(limitedPower);
 
             // =========================================================
             // 2. GAMEPAD 2: CONTROL DE RPM (DE 25 EN 25)
@@ -794,8 +814,11 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
      * El término derivativo usa la velocidad real medida por el encoder (no la derivada de tx),
      * así frena al ritmo del loop y no al de la cámara.
      */
-    private double aimPower(double targetAngleDeg, double currentAngleDeg,
-                            double counterRate, double gyroFeedForward) {
+    /**
+     * Corrección del error de apuntado (sin la compensación directa del giro del chasis, que se
+     * suma aparte, después de la rampa, para que no llegue tarde).
+     */
+    private double aimPower(double targetAngleDeg, double currentAngleDeg, double counterRate) {
         double angleError = targetAngleDeg - currentAngleDeg;
         // La zona muerta solo apaga el término proporcional: el de velocidad sigue activo para
         // que, aun "centrada", la torreta acompañe el giro del chasis sin esperar a acumular error.
@@ -808,8 +831,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
         // El término de velocidad del objetivo (aimRateFf) va aparte y arranca en 0.
         double power = proportional
                 + (counterRate - turretRateDegPerSec) * aimKd
-                + (aimTargetRateDegPerSec * aimRateFf)
-                + gyroFeedForward;
+                + (aimTargetRateDegPerSec * aimRateFf);
         power = clamp(power, MAX_TURRET_POWER);
 
         // La potencia mínima solo cuando la torreta está prácticamente detenida: es para romper
