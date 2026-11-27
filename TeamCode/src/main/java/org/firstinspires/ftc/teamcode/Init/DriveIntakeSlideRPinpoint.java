@@ -25,6 +25,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
     // Si siempre arranca mirando al frente del campo, déjalo en 0.
     private static final double START_HEADING_DEG = 0.0;
 
+    // El robot arranca viendo el gol de frente, así que desde el inicio se sabe dónde está:
+    // con la torreta en este ángulo (0 = al frente) apunta al gol. Con eso y el IMU, la torreta
+    // apunta al gol aunque la cámara todavía no vea el tag o lo pierda.
+    // Sin odometría, el IMU solo compensa los GIROS: si el robot se traslada, la dirección real
+    // al gol cambia y eso lo corrige la cámara en cuanto ve el tag.
+    private static final double START_GOAL_TURRET_ANGLE_DEG = 0.0;
+
     // true: resetea el yaw del IMU en init (el robot debe arrancar mirando al frente del campo).
     // false: conserva el yaw que dejó el autónomo.
     private static final boolean RESET_YAW_ON_INIT = true;
@@ -395,9 +402,12 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 angleHistoryCount++;
             }
 
-            // Primera vuelta: el rumbo a sostener es hacia donde apunta la torreta ahora mismo.
+            // Primera vuelta: el robot arrancó viendo el gol, así que el gol está hacia donde
+            // apunta START_GOAL_TURRET_ANGLE_DEG con el yaw de este momento. Se usa ese valor fijo
+            // y no el ángulo medido, por si la torreta no terminó de centrarse al arrancar.
             if (!aimTargetValid) {
-                holdCurrentPointing(turretAngleDeg);
+                aimFieldBearingDeg = START_GOAL_TURRET_ANGLE_DEG - turretYawSign * yawUnwrappedDeg;
+                bearingFromTag = false;
                 aimTargetValid = true;
             }
 
@@ -412,15 +422,13 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 if (Math.abs(turretAngleDeg) > CENTER_TOLERANCE_DEG) {
                     desiredTurretPower = clamp(-turretAngleDeg * CENTER_KP, CENTER_MAX_POWER);
                 }
-                // Al soltar, que sostenga donde quedó (no que regrese al rumbo de antes).
-                holdCurrentPointing(turretAngleDeg);
+                // El rumbo al gol se conserva: al soltar, la torreta vuelve a apuntar al gol.
             }
             else if (unwinding && !manualOverride) {
-                // Ignora el auto-aim y regresa la torreta hacia el centro (0°)
+                // Ignora el auto-aim y regresa la torreta hacia el centro (0°). Al terminar vuelve
+                // a apuntar al gol: como el objetivo siempre se lleva al rango ±165° (o espera en
+                // el límite), ya no puede volver a pasarse de 175° y desenredar en ciclo.
                 desiredTurretPower = clamp(-turretAngleDeg * UNWIND_KP, UNWIND_MAX_POWER);
-                // Si no, al terminar de desenredar volvería al rumbo viejo, que puede estar más
-                // allá del límite, y desenredaría otra vez en un ciclo sin fin.
-                holdCurrentPointing(turretAngleDeg);
             }
             else if (!manualOverride) {
                 LLResult result = limelight.getLatestResult();
@@ -499,7 +507,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                         sweepDirectionRight = true;
                     }
                     desiredTurretPower = sweepDirectionRight ? SWEEP_POWER : -SWEEP_POWER;
-                    holdCurrentPointing(turretAngleDeg); // al soltar B, sostiene donde quedó
+                    // Si no encuentra nada, al soltar B vuelve a apuntar al último rumbo del gol.
                 } else {
                     // Con o sin tag a la vista, la torreta persigue el rumbo guardado, traducido a
                     // ángulo de torreta con el yaw de ESTA vuelta. Así, aunque el tag se pierda en
@@ -531,8 +539,7 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             }
             else {
                 desiredTurretPower = gamepad2.right_stick_x * MANUAL_TURRET_POWER_SCALE;
-                // Al soltar el stick, sostiene donde la dejaste (hasta el siguiente frame con tag).
-                holdCurrentPointing(turretAngleDeg);
+                // El manual es temporal: al soltar el stick, el auto-aim vuelve a apuntar al gol.
             }
 
             // Rampa de potencia, SOLO sobre la corrección: limita qué tan rápido puede cambiar,
@@ -763,8 +770,8 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
                 else if (tagLostTimer.seconds() <= TAG_MEMORY_TIMEOUT) modo = "AUTO (Locked)";
                 else if (gamepad2.b) modo = "BUSCANDO (B)";
                 else modo = bearingFromTag
-                        ? "SIN TAG - apunta al último rumbo del gol (B busca)"
-                        : "SIN TAG - sostiene dirección (B busca)";
+                        ? "SIN TAG - apunta al último rumbo visto del gol (B busca)"
+                        : "SIN TAG - apunta al gol por IMU, desde el inicio (B busca)";
 
                 // ---- Lo importante, arriba (en el Driver Station caben pocas líneas) ----
                 telemetry.addData("Modo Torreta", modo);
@@ -860,13 +867,6 @@ public class DriveIntakeSlideRPinpoint extends LinearOpMode {
             }
         }
         return best;
-    }
-
-    /** Toma como rumbo a sostener hacia donde apunta la torreta ahora mismo. */
-    private void holdCurrentPointing(double turretAngleDeg) {
-        aimFieldBearingDeg = turretAngleDeg - turretYawSign * yawUnwrappedDeg;
-        bearingFromTag = false;
-        aimTargetRateDegPerSec = 0.0;
     }
 
     private double getTunableValue(int index) {
